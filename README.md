@@ -81,6 +81,9 @@ python -m openinflation_parser.orchestrator \
 - `--jobs-max-history` — лимит terminal jobs в памяти/БД.
 - `--jobs-retention-sec` — TTL terminal jobs.
 - `--jobs-db-path` — путь к sqlite с состоянием задач (`""` чтобы отключить).
+- `--download-host` / `--download-port` — где поднимать FastAPI endpoint загрузки.
+- `--download-url-ttl-sec` — время жизни подписанной ссылки.
+- `--download-secret` — HMAC secret для подписи ссылок (если не передан, генерируется при старте).
 
 Пример для Чижика:
 ```bash
@@ -122,4 +125,10 @@ openinflation-orchestrator \
 - `{"action":"workers"}`
 - `{"action":"shutdown"}`
 
-Результат успешной задачи: файлы `<store_code>_<timestamp>.json` и `<store_code>_<timestamp>.json.gz` в каталоге `output_dir`.
+Для успешной задачи в `status/jobs` возвращаются:
+- `output_json`, `output_gz`
+- `download_url` (подписанный URL FastAPI `/download`)
+- `download_sha256` (контрольная сумма `.json.gz`)
+- `download_expires_at` (UTC, до какого момента URL валиден)
+
+Результат задачи сохраняется файлами `<store_code>_<timestamp>.json` и `<store_code>_<timestamp>.json.gz` в `output_dir`.

@@ -19,6 +19,28 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="OpenInflation orchestration server")
     parser.add_argument("--host", default="127.0.0.1", help="WebSocket host")
     parser.add_argument("--port", type=int, default=8765, help="WebSocket port")
+    parser.add_argument(
+        "--download-host",
+        default=None,
+        help="HTTP host for file download API (default: same as --host).",
+    )
+    parser.add_argument(
+        "--download-port",
+        type=int,
+        default=None,
+        help="HTTP port for file download API (default: --port + 1).",
+    )
+    parser.add_argument(
+        "--download-url-ttl-sec",
+        type=int,
+        default=3600,
+        help="Signed download URL lifetime in seconds.",
+    )
+    parser.add_argument(
+        "--download-secret",
+        default=None,
+        help="Optional HMAC secret for signed download URLs. If omitted, generated on startup.",
+    )
 
     parser.add_argument(
         "--parser",
@@ -181,6 +203,8 @@ async def run_orchestrator(args: argparse.Namespace) -> None:
     jobs_db_path = args.jobs_db_path.strip() if isinstance(args.jobs_db_path, str) else None
     if jobs_db_path == "":
         jobs_db_path = None
+    download_host = args.download_host or args.host
+    download_port = args.download_port if args.download_port is not None else (args.port + 1)
 
     LOGGER.info(
         "Starting orchestrator config: %s",
@@ -205,11 +229,15 @@ async def run_orchestrator(args: argparse.Namespace) -> None:
                 "jobs_max_history": max(1, args.jobs_max_history),
                 "jobs_retention_sec": max(60, args.jobs_retention_sec),
                 "jobs_db_path": jobs_db_path,
+                "download_host": download_host,
+                "download_port": download_port,
+                "download_url_ttl_sec": max(30, int(args.download_url_ttl_sec)),
             },
             ensure_ascii=False,
         ),
     )
     LOGGER.info("WebSocket endpoint: ws://%s:%s", args.host, args.port)
+    LOGGER.info("Download endpoint: http://%s:%s/download", download_host, download_port)
 
     server = OrchestratorServer(
         host=args.host,
@@ -221,6 +249,10 @@ async def run_orchestrator(args: argparse.Namespace) -> None:
         jobs_max_history=max(1, args.jobs_max_history),
         jobs_retention_sec=max(60, args.jobs_retention_sec),
         jobs_db_path=jobs_db_path,
+        download_host=download_host,
+        download_port=download_port,
+        download_url_ttl_sec=max(30, int(args.download_url_ttl_sec)),
+        download_secret=args.download_secret,
     )
     await server.run(bootstrap_store_code=args.bootstrap_store_code)
 

@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import hmac
 import json
 import logging
 import multiprocessing as mp
+import secrets
+import time
 from dataclasses import asdict
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 from uuid import uuid4
 
 from pydantic import ValidationError
@@ -46,9 +53,17 @@ class OrchestratorServer:
         jobs_max_history: int = 1000,
         jobs_retention_sec: int = 86400,
         jobs_db_path: str | None = None,
+        download_host: str | None = None,
+        download_port: int | None = None,
+        download_url_ttl_sec: int = 3600,
+        download_secret: str | None = None,
     ):
         self.host = host
         self.port = port
+        self.download_host = (download_host or host).strip() or host
+        self.download_port = int(download_port if download_port is not None else (port + 1))
+        self.download_url_ttl_sec = max(30, int(download_url_ttl_sec))
+        self._download_secret = (download_secret or secrets.token_hex(32)).encode("utf-8")
         self.worker_count = max(1, worker_count)
         self.proxies = proxies
         self.defaults = defaults
@@ -71,12 +86,221 @@ class OrchestratorServer:
         self._stop_event = asyncio.Event()
         self._collector_task: asyncio.Task[None] | None = None
         self._heartbeat_task: asyncio.Task[None] | None = None
+        self._download_server: Any = None
+        self._download_task: asyncio.Task[None] | None = None
         self._is_stopped = False
 
     def _worker_proxy(self, index: int) -> str | None:
         if not self.proxies:
             return None
         return self.proxies[index % len(self.proxies)]
+
+    def _download_public_host(self) -> str:
+        if self.download_host in {"0.0.0.0", "::"}:
+            return "127.0.0.1"
+        return self.download_host
+
+    @staticmethod
+    def _sha256_file(path: str) -> str:
+        digest = hashlib.sha256()
+        with open(path, "rb") as file_stream:
+            while True:
+                chunk = file_stream.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _download_signature(
+        self,
+        *,
+        job_id: str,
+        expires_ts: int,
+        checksum: str,
+    ) -> str:
+        payload = f"{job_id}:{expires_ts}:{checksum}".encode("utf-8")
+        return hmac.new(self._download_secret, payload, hashlib.sha256).hexdigest()
+
+    def _verify_download_signature(
+        self,
+        *,
+        job_id: str,
+        expires_ts: int,
+        checksum: str,
+        signature: str,
+    ) -> bool:
+        expected = self._download_signature(
+            job_id=job_id,
+            expires_ts=expires_ts,
+            checksum=checksum,
+        )
+        return hmac.compare_digest(expected, signature)
+
+    def _build_download_url(
+        self,
+        *,
+        job_id: str,
+        checksum: str,
+    ) -> tuple[str, str]:
+        expires_ts = int(time.time()) + self.download_url_ttl_sec
+        signature = self._download_signature(
+            job_id=job_id,
+            expires_ts=expires_ts,
+            checksum=checksum,
+        )
+        query = urlencode(
+            {
+                "job_id": job_id,
+                "expires": str(expires_ts),
+                "sha256": checksum,
+                "sig": signature,
+            }
+        )
+        url = (
+            f"http://{self._download_public_host()}:{self.download_port}/download?{query}"
+        )
+        expires_at = datetime.fromtimestamp(expires_ts, tz=timezone.utc).isoformat()
+        return url, expires_at
+
+    def _job_download_data(self, job_state: dict[str, Any]) -> dict[str, Any] | None:
+        if str(job_state.get("status")) != "success":
+            return None
+
+        job_id = str(job_state.get("job_id", "")).strip()
+        output_gz = str(job_state.get("output_gz", "")).strip()
+        checksum = str(job_state.get("output_gz_sha256", "")).strip()
+        if not job_id or not output_gz or not checksum:
+            return None
+        if not Path(output_gz).is_file():
+            return None
+
+        download_url, expires_at = self._build_download_url(
+            job_id=job_id,
+            checksum=checksum,
+        )
+        return {
+            "download_url": download_url,
+            "download_sha256": checksum,
+            "download_expires_at": expires_at,
+        }
+
+    def _present_job(self, job_state: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(job_state)
+        download_data = self._job_download_data(job_state)
+        if download_data is not None:
+            payload.update(download_data)
+        else:
+            payload.pop("download_url", None)
+            payload.pop("download_sha256", None)
+            payload.pop("download_expires_at", None)
+        return payload
+
+    def _build_download_app(self) -> Any:
+        try:
+            from fastapi import FastAPI, HTTPException, Query
+            from fastapi.responses import FileResponse
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "Packages 'fastapi' and 'uvicorn' are required for download URLs."
+            ) from exc
+
+        app = FastAPI(
+            title="OpenInflation Orchestrator Download API",
+            docs_url=None,
+            redoc_url=None,
+            openapi_url=None,
+        )
+        orchestrator = self
+
+        @app.get("/download")
+        async def download(
+            job_id: str = Query(..., min_length=1),
+            expires: int = Query(...),
+            sha256: str = Query(..., min_length=1),
+            sig: str = Query(..., min_length=1),
+        ) -> Any:
+            if expires < int(time.time()):
+                raise HTTPException(status_code=403, detail="Download URL has expired")
+
+            if not orchestrator._verify_download_signature(
+                job_id=job_id,
+                expires_ts=expires,
+                checksum=sha256,
+                signature=sig,
+            ):
+                raise HTTPException(status_code=403, detail="Invalid signature")
+
+            job_state = orchestrator._job_store.get(job_id)
+            if not job_state or str(job_state.get("status")) != "success":
+                raise HTTPException(status_code=404, detail="Job result not found")
+
+            output_gz = str(job_state.get("output_gz", "")).strip()
+            stored_checksum = str(job_state.get("output_gz_sha256", "")).strip()
+            if not output_gz or not stored_checksum or stored_checksum != sha256:
+                raise HTTPException(status_code=403, detail="Checksum mismatch")
+
+            file_path = Path(output_gz)
+            if not file_path.is_file():
+                raise HTTPException(status_code=404, detail="Result file is missing")
+
+            try:
+                actual_checksum = await asyncio.to_thread(
+                    orchestrator._sha256_file,
+                    str(file_path),
+                )
+            except Exception as exc:
+                LOGGER.exception("Failed to compute checksum for %s", file_path)
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to validate file checksum",
+                ) from exc
+
+            if actual_checksum != sha256:
+                raise HTTPException(status_code=403, detail="File checksum validation failed")
+
+            return FileResponse(
+                path=str(file_path),
+                media_type="application/gzip",
+                filename=file_path.name,
+            )
+
+        return app
+
+    async def _start_download_server(self) -> None:
+        if self._download_task is not None:
+            return
+        try:
+            import uvicorn
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "Package 'uvicorn' is required for download URLs."
+            ) from exc
+
+        app = self._build_download_app()
+        config = uvicorn.Config(
+            app=app,
+            host=self.download_host,
+            port=self.download_port,
+            log_level=self.log_level.lower(),
+            access_log=False,
+        )
+        self._download_server = uvicorn.Server(config=config)
+        self._download_task = asyncio.create_task(
+            self._download_server.serve(),
+            name="orchestrator-download-api",
+        )
+        await asyncio.sleep(0.15)
+        if self._download_task.done():
+            exc = self._download_task.exception()
+            if exc is not None:
+                raise RuntimeError(
+                    f"Failed to start download API on {self.download_host}:{self.download_port}"
+                ) from exc
+        LOGGER.info(
+            "Download API listening on http://%s:%s/download",
+            self.download_host,
+            self.download_port,
+        )
 
     def start_workers(self) -> None:
         LOGGER.info("Starting %s workers", self.worker_count)
@@ -289,6 +513,15 @@ class OrchestratorServer:
                     job_state["output_json"] = event["output_json"]
                 if "output_gz" in event:
                     job_state["output_gz"] = event["output_gz"]
+                    try:
+                        job_state["output_gz_sha256"] = self._sha256_file(
+                            str(event["output_gz"])
+                        )
+                    except Exception:
+                        LOGGER.exception(
+                            "Failed to compute output_gz checksum for job %s",
+                            job_id,
+                        )
                 self._job_store.upsert(job_state)
                 LOGGER.info(
                     "Job %s finished: status=%s worker=%s",
@@ -458,14 +691,18 @@ class OrchestratorServer:
                     job = self._job_store.get(str(request.job_id))
                     if not job:
                         return {"ok": False, "action": request.action, "error": "Job not found."}
-                    return {"ok": True, "action": request.action, "job": job}
+                    return {
+                        "ok": True,
+                        "action": request.action,
+                        "job": self._present_job(job),
+                    }
                 return {"ok": True, "action": request.action, "summary": self._global_status()}
 
             if isinstance(request, JobsRequest):
                 return {
                     "ok": True,
                     "action": request.action,
-                    "jobs": self._job_store.sorted_jobs(),
+                    "jobs": [self._present_job(job) for job in self._job_store.sorted_jobs()],
                 }
 
             if isinstance(request, WorkersRequest):
@@ -522,6 +759,7 @@ class OrchestratorServer:
     async def run(self, *, bootstrap_store_code: str | None = None) -> None:
         websockets = require_websockets_module()
         try:
+            await self._start_download_server()
             self.start_workers()
             self._collector_task = asyncio.create_task(self._collect_results())
             self._heartbeat_task = asyncio.create_task(self._log_heartbeat())
@@ -554,6 +792,20 @@ class OrchestratorServer:
         if self._is_stopped:
             return
         self._is_stopped = True
+
+        if self._download_server is not None:
+            LOGGER.info("Stopping download API")
+            self._download_server.should_exit = True
+        if self._download_task is not None:
+            try:
+                await self._download_task
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOGGER.exception("Download API task exited with error")
+            finally:
+                self._download_task = None
+                self._download_server = None
 
         LOGGER.info("Stopping orchestrator workers")
         for worker_id, queue in self._worker_queues.items():

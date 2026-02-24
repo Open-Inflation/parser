@@ -1,6 +1,8 @@
-websockets>=12.0,<16.0
-openinflation-dataclass>=0.1.0
-fixprice-api>=0.2.2
-chizhik_api>=0.2.4
-perekrestok_api>=0.2.2
-pytest>=8.0.0
+websockets
+fastapi
+uvicorn
+openinflation-dataclass
+fixprice-api
+chizhik_api
+perekrestok_api
+pytest

@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from queue import Queue
 import sqlite3
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -209,6 +210,9 @@ def test_run_calls_stop_when_bootstrap_fails(monkeypatch: pytest.MonkeyPatch) ->
     def _start_workers() -> None:
         return None
 
+    async def _start_download_server() -> None:
+        return None
+
     async def _collect_results() -> None:
         return None
 
@@ -222,6 +226,7 @@ def test_run_calls_stop_when_bootstrap_fails(monkeypatch: pytest.MonkeyPatch) ->
         state["stop_called"] = True
 
     monkeypatch.setattr(server, "start_workers", _start_workers)
+    monkeypatch.setattr(server, "_start_download_server", _start_download_server)
     monkeypatch.setattr(server, "_collect_results", _collect_results)
     monkeypatch.setattr(server, "_log_heartbeat", _log_heartbeat)
     monkeypatch.setattr(server, "_enqueue_job", _enqueue_job)
@@ -297,3 +302,75 @@ def test_dispatch_rules_allow_same_proxy_for_different_parsers() -> None:
     payload_2 = queue_2.get_nowait()
     parsers = {str(payload_1["parser_name"]), str(payload_2["parser_name"])}
     assert parsers == {"fixprice", "chizhik"}
+
+
+def test_present_job_contains_signed_download_url(tmp_path: Path) -> None:
+    defaults = _job_defaults()
+    server = OrchestratorServer(
+        host="127.0.0.1",
+        port=8765,
+        worker_count=1,
+        proxies=[],
+        defaults=defaults,
+        jobs_db_path=None,
+        download_url_ttl_sec=3600,
+        download_secret="test-secret",
+    )
+
+    artifact = tmp_path / "store.json.gz"
+    artifact.write_bytes(b"payload")
+    checksum = server._sha256_file(str(artifact))
+    job = {
+        "job_id": "job-dl-1",
+        "status": "success",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "finished_at": "2026-01-01T00:01:00+00:00",
+        "output_gz": str(artifact),
+        "output_gz_sha256": checksum,
+    }
+
+    presented = server._present_job(job)
+    assert presented["download_sha256"] == checksum
+    assert "download_url" in presented
+    assert "download_expires_at" in presented
+
+    parsed = urlparse(str(presented["download_url"]))
+    assert parsed.path == "/download"
+    query = parse_qs(parsed.query)
+    assert query["job_id"][0] == "job-dl-1"
+    expires = int(query["expires"][0])
+    signed_checksum = query["sha256"][0]
+    signature = query["sig"][0]
+    assert signed_checksum == checksum
+    assert server._verify_download_signature(
+        job_id="job-dl-1",
+        expires_ts=expires,
+        checksum=signed_checksum,
+        signature=signature,
+    )
+
+
+def test_present_job_omits_download_fields_when_file_missing() -> None:
+    defaults = _job_defaults()
+    server = OrchestratorServer(
+        host="127.0.0.1",
+        port=8765,
+        worker_count=1,
+        proxies=[],
+        defaults=defaults,
+        jobs_db_path=None,
+        download_secret="test-secret",
+    )
+    job = {
+        "job_id": "job-dl-2",
+        "status": "success",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "finished_at": "2026-01-01T00:01:00+00:00",
+        "output_gz": "/tmp/does-not-exist.json.gz",
+        "output_gz_sha256": "deadbeef",
+    }
+
+    presented = server._present_job(job)
+    assert "download_url" not in presented
+    assert "download_sha256" not in presented
+    assert "download_expires_at" not in presented
