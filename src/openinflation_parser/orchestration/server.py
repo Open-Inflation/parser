@@ -723,19 +723,6 @@ class OrchestratorServer:
             country_id=int(request.get("country_id", self.defaults.country_id)),
             city_id=city_id,
             api_timeout_ms=float(request.get("api_timeout_ms", self.defaults.api_timeout_ms)),
-            request_retries=max(
-                0,
-                int(request.get("request_retries", self.defaults.request_retries)),
-            ),
-            request_retry_backoff_sec=max(
-                0.1,
-                float(
-                    request.get(
-                        "request_retry_backoff_sec",
-                        self.defaults.request_retry_backoff_sec,
-                    )
-                ),
-            ),
             category_limit=max(1, int(request.get("category_limit", self.defaults.category_limit))),
             pages_per_category=max(
                 1, int(request.get("pages_per_category", self.defaults.pages_per_category))
@@ -770,8 +757,6 @@ class OrchestratorServer:
             "country_id": job.country_id,
             "city_id": job.city_id,
             "api_timeout_ms": job.api_timeout_ms,
-            "request_retries": job.request_retries,
-            "request_retry_backoff_sec": job.request_retry_backoff_sec,
             "category_limit": job.category_limit,
             "pages_per_category": job.pages_per_category,
             "max_pages_per_category": job.max_pages_per_category,
@@ -786,14 +771,13 @@ class OrchestratorServer:
         self._pending_jobs.append(job)
         dispatched = await self._try_dispatch_jobs()
         LOGGER.info(
-            "Job enqueued: id=%s store=%s parser=%s city_id=%s full_catalog=%s timeout_ms=%s retries=%s category_limit=%s pages=%s max_pages=%s per_page=%s include_images=%s strict_validation=%s pending=%s dispatched_now=%s",
+            "Job enqueued: id=%s store=%s parser=%s city_id=%s full_catalog=%s timeout_ms=%s category_limit=%s pages=%s max_pages=%s per_page=%s include_images=%s strict_validation=%s pending=%s dispatched_now=%s",
             job.job_id,
             job.store_code,
             job.parser_name,
             job.city_id,
             job.full_catalog,
             job.api_timeout_ms,
-            job.request_retries,
             job.category_limit,
             job.pages_per_category,
             job.max_pages_per_category,

@@ -103,8 +103,6 @@ def _job_defaults() -> JobDefaults:
         country_id=2,
         city_id=3,
         api_timeout_ms=90000.0,
-        request_retries=3,
-        request_retry_backoff_sec=1.5,
         category_limit=1,
         pages_per_category=1,
         max_pages_per_category=200,

@@ -128,10 +128,7 @@ class PerekrestokCatalogMixin:
             return cached
 
         api = self._require_api()
-        response = await self._with_retry(
-            operation=f"catalog.product.info[{product_plu}]",
-            call=lambda: api.Catalog.Product.info(product_plu=product_plu),
-        )
+        response = await api.Catalog.Product.info(product_plu=product_plu)
         payload = response.json()
         if not isinstance(payload, dict):
             return None
@@ -214,13 +211,10 @@ class PerekrestokCatalogMixin:
             page,
             safe_limit,
         )
-        response = await self._with_retry(
-            operation=f"catalog.feed[{query.category_id}:{page}]",
-            call=lambda: api.Catalog.feed(
-                filter=self._build_feed_filter(category_id=query.category_id),
-                page=page,
-                limit=safe_limit,
-            ),
+        response = await api.Catalog.feed(
+            filter=self._build_feed_filter(category_id=query.category_id),
+            page=page,
+            limit=safe_limit,
         )
         payload = response.json()
         if not isinstance(payload, dict):
@@ -359,10 +353,7 @@ class PerekrestokCatalogMixin:
     async def collect_categories(self) -> list[Category]:
         api = self._require_api()
         LOGGER.info("Collecting Perekrestok category tree")
-        response = await self._with_retry(
-            operation="catalog.tree",
-            call=lambda: api.Catalog.tree(),
-        )
+        response = await api.Catalog.tree()
         payload = response.json()
         if not isinstance(payload, dict):
             return []

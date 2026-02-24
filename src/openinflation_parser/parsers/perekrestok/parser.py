@@ -33,11 +33,10 @@ class PerekrestokParser(
         from perekrestok_api import PerekrestokAPI
 
         LOGGER.info(
-            "Initializing Perekrestok API client: city_id=%s include_images=%s timeout_ms=%s retries=%s",
+            "Initializing Perekrestok API client: city_id=%s include_images=%s timeout_ms=%s",
             self.config.city_id,
             self.config.include_images,
             self.config.timeout_ms,
-            self.config.request_retries,
         )
         self._api = PerekrestokAPI(
             headless=self.config.headless,

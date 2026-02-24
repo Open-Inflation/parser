@@ -38,13 +38,10 @@ class PerekrestokGeolocationMixin:
 
     async def _set_city_context(self, *, city_id: int) -> None:
         api = self._require_api()
-        response = await self._with_retry(
-            operation=f"geolocation.shop.on_map[{city_id}:1]",
-            call=lambda: api.Geolocation.Shop.on_map(
-                city_id=city_id,
-                page=1,
-                limit=1,
-            ),
+        response = await api.Geolocation.Shop.on_map(
+            city_id=city_id,
+            page=1,
+            limit=1,
         )
         payload = response.json()
         if not isinstance(payload, dict):
@@ -62,10 +59,7 @@ class PerekrestokGeolocationMixin:
         if shop_id is None:
             return
 
-        await self._with_retry(
-            operation=f"geolocation.selection.shop_point[{shop_id}]",
-            call=lambda: api.Geolocation.Selection.shop_point(shop_id=shop_id),
-        )
+        await api.Geolocation.Selection.shop_point(shop_id=shop_id)
         LOGGER.info(
             "Selected session city context: city_id=%s shop_id=%s",
             city_id,
@@ -82,10 +76,7 @@ class PerekrestokGeolocationMixin:
         limit = max(1, self.config.city_search_limit)
 
         LOGGER.info("Collecting cities: query=%s limit=%s", search, limit)
-        response = await self._with_retry(
-            operation=f"geolocation.search[{search}:{limit}]",
-            call=lambda: api.Geolocation.search(search=search, limit=limit),
-        )
+        response = await api.Geolocation.search(search=search, limit=limit)
         payload = response.json()
         if isinstance(payload, dict):
             content = payload.get("content")
@@ -105,10 +96,7 @@ class PerekrestokGeolocationMixin:
                         )
 
         if not self._city_cache_by_id:
-            fallback = await self._with_retry(
-                operation="geolocation.current",
-                call=lambda: api.Geolocation.current(),
-            )
+            fallback = await api.Geolocation.current()
             fallback_payload = fallback.json()
             if isinstance(fallback_payload, dict):
                 content = fallback_payload.get("content")
@@ -134,13 +122,10 @@ class PerekrestokGeolocationMixin:
         seen_ids: set[int] = set()
 
         for page in range(1, safe_max_pages + 1):
-            response = await self._with_retry(
-                operation=f"geolocation.shop.on_map[{city_id}:{page}:{safe_page_size}]",
-                call=lambda: api.Geolocation.Shop.on_map(
-                    page=page,
-                    limit=safe_page_size,
-                    city_id=city_id,
-                ),
+            response = await api.Geolocation.Shop.on_map(
+                page=page,
+                limit=safe_page_size,
+                city_id=city_id,
             )
             payload = response.json()
             if not isinstance(payload, dict):
@@ -175,10 +160,7 @@ class PerekrestokGeolocationMixin:
 
     async def _collect_shop_info(self, *, shop_id: int) -> dict[str, Any] | None:
         api = self._require_api()
-        response = await self._with_retry(
-            operation=f"geolocation.shop.info[{shop_id}]",
-            call=lambda: api.Geolocation.Shop.info(shop_id=shop_id),
-        )
+        response = await api.Geolocation.Shop.info(shop_id=shop_id)
         payload = response.json()
         if not isinstance(payload, dict):
             return None

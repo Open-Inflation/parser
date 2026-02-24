@@ -26,12 +26,11 @@ class FixPriceParser(ParserRuntimeMixin, StoreParser):
         from fixprice_api import FixPriceAPI
 
         LOGGER.info(
-            "Initializing FixPrice API client: country_id=%s city_id=%s include_images=%s timeout_ms=%s retries=%s",
+            "Initializing FixPrice API client: country_id=%s city_id=%s include_images=%s timeout_ms=%s",
             self.config.country_id,
             self.config.city_id,
             self.config.include_images,
             self.config.timeout_ms,
-            self.config.request_retries,
         )
         self._api = FixPriceAPI(
             headless=self.config.headless,
@@ -196,7 +195,7 @@ class FixPriceParser(ParserRuntimeMixin, StoreParser):
     async def collect_categories(self) -> list[Category]:
         api = self._require_api()
         LOGGER.info("Collecting category tree")
-        response = await self._with_retry(operation="catalog.tree", call=api.Catalog.tree)
+        response = await api.Catalog.tree()
         raw_tree = response.json()
 
         categories: list[Category] = []
@@ -230,14 +229,11 @@ class FixPriceParser(ParserRuntimeMixin, StoreParser):
             page,
             limit,
         )
-        response = await self._with_retry(
-            operation=f"catalog.products_list[{category_alias}:{subcategory_alias}:{page}]",
-            call=lambda: api.Catalog.products_list(
-                category_alias=category_alias,
-                subcategory_alias=subcategory_alias,
-                page=page,
-                limit=limit,
-            ),
+        response = await api.Catalog.products_list(
+            category_alias=category_alias,
+            subcategory_alias=subcategory_alias,
+            page=page,
+            limit=limit,
         )
         raw_products = response.json()
 
@@ -282,10 +278,7 @@ class FixPriceParser(ParserRuntimeMixin, StoreParser):
             return list(self._city_cache_by_country[target_country_id].values())
 
         LOGGER.info("Collecting cities: country_id=%s", target_country_id)
-        response = await self._with_retry(
-            operation=f"geolocation.cities_list[{target_country_id}]",
-            call=lambda: api.Geolocation.cities_list(country_id=target_country_id),
-        )
+        response = await api.Geolocation.cities_list(country_id=target_country_id)
         raw_cities = response.json()
         if not isinstance(raw_cities, list):
             return []
@@ -318,10 +311,7 @@ class FixPriceParser(ParserRuntimeMixin, StoreParser):
         if city_id is not None and city_id not in cached:
             api = self._require_api()
             LOGGER.info("City cache miss, requesting city_info: city_id=%s", city_id)
-            response = await self._with_retry(
-                operation=f"geolocation.city_info[{city_id}]",
-                call=lambda: api.Geolocation.city_info(city_id=city_id),
-            )
+            response = await api.Geolocation.city_info(city_id=city_id)
             city = response.json()
             if isinstance(city, dict):
                 cached[city_id] = FixPriceMapper.map_city(
@@ -360,15 +350,10 @@ class FixPriceParser(ParserRuntimeMixin, StoreParser):
             target_city_id,
             store_code,
         )
-        response = await self._with_retry(
-            operation=(
-                f"geolocation.shop.search[{target_country_id}:{region_id}:{target_city_id}]"
-            ),
-            call=lambda: api.Geolocation.Shop.search(
-                country_id=target_country_id,
-                region_id=region_id,
-                city_id=target_city_id,
-            ),
+        response = await api.Geolocation.Shop.search(
+            country_id=target_country_id,
+            region_id=region_id,
+            city_id=target_city_id,
         )
         raw_shops = response.json()
         if not isinstance(raw_shops, list):

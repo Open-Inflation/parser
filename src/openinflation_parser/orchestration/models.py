@@ -49,8 +49,6 @@ class WorkerJob:
     country_id: int = 2
     city_id: int | str | None = None
     api_timeout_ms: float = 90000.0
-    request_retries: int = 3
-    request_retry_backoff_sec: float = 1.5
     category_limit: int = 1
     pages_per_category: int = 1
     max_pages_per_category: int = 200
@@ -70,10 +68,6 @@ class WorkerJob:
             country_id=int(payload.get("country_id", 2)),
             city_id=city_id,
             api_timeout_ms=float(payload.get("api_timeout_ms", 90000.0)),
-            request_retries=int(payload.get("request_retries", 3)),
-            request_retry_backoff_sec=float(
-                payload.get("request_retry_backoff_sec", 1.5)
-            ),
             category_limit=int(payload.get("category_limit", 1)),
             pages_per_category=int(payload.get("pages_per_category", 1)),
             max_pages_per_category=int(payload.get("max_pages_per_category", 200)),
@@ -94,8 +88,6 @@ class JobDefaults:
     country_id: int
     city_id: int | str | None
     api_timeout_ms: float
-    request_retries: int
-    request_retry_backoff_sec: float
     category_limit: int
     pages_per_category: int
     max_pages_per_category: int

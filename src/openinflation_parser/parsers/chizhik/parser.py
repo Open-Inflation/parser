@@ -27,11 +27,10 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
         from chizhik_api import ChizhikAPI
 
         LOGGER.info(
-            "Initializing Chizhik API client: city_id=%s include_images=%s timeout_ms=%s retries=%s",
+            "Initializing Chizhik API client: city_id=%s include_images=%s timeout_ms=%s",
             self.config.city_id,
             self.config.include_images,
             self.config.timeout_ms,
-            self.config.request_retries,
         )
         self._api = ChizhikAPI(
             headless=self.config.headless,
@@ -98,12 +97,9 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
             return cached
 
         api = self._require_api()
-        response = await self._with_retry(
-            operation=f"catalog.product.info[{product_id}]",
-            call=lambda: api.Catalog.Product.info(
-                product_id=product_id,
-                city_id=self.config.city_id,
-            ),
+        response = await api.Catalog.Product.info(
+            product_id=product_id,
+            city_id=self.config.city_id,
         )
         payload = response.json()
         if not isinstance(payload, dict):
@@ -178,13 +174,10 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
             query.category_slug,
             page,
         )
-        response = await self._with_retry(
-            operation=f"catalog.products_list[{query.category_id}:{page}]",
-            call=lambda: api.Catalog.products_list(
-                page=page,
-                category_id=query.category_id,
-                city_id=self.config.city_id,
-            ),
+        response = await api.Catalog.products_list(
+            page=page,
+            category_id=query.category_id,
+            city_id=self.config.city_id,
         )
         payload = response.json()
         if not isinstance(payload, dict):
@@ -313,10 +306,7 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
     async def collect_categories(self) -> list[Category]:
         api = self._require_api()
         LOGGER.info("Collecting Chizhik category tree")
-        response = await self._with_retry(
-            operation="catalog.tree",
-            call=lambda: api.Catalog.tree(city_id=self.config.city_id),
-        )
+        response = await api.Catalog.tree(city_id=self.config.city_id)
         raw_tree = response.json()
         if not isinstance(raw_tree, list):
             return []
@@ -370,10 +360,7 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
 
         for page in range(1, max_pages + 1):
             LOGGER.info("Collecting cities: search=%s page=%s", search, page)
-            response = await self._with_retry(
-                operation=f"geolocation.cities_list[{search}:{page}]",
-                call=lambda: api.Geolocation.cities_list(search_name=search, page=page),
-            )
+            response = await api.Geolocation.cities_list(search_name=search, page=page)
             payload = response.json()
             if not isinstance(payload, dict):
                 break
@@ -402,10 +389,7 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
 
     async def _city_for_store_code(self, store_code: str) -> AdministrativeUnit | None:
         api = self._require_api()
-        response = await self._with_retry(
-            operation=f"geolocation.cities_list[{store_code}:1]",
-            call=lambda: api.Geolocation.cities_list(search_name=store_code, page=1),
-        )
+        response = await api.Geolocation.cities_list(search_name=store_code, page=1)
         payload = response.json()
         if not isinstance(payload, dict):
             return None

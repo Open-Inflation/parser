@@ -79,7 +79,7 @@ def test_load_proxy_list_deduplicates_and_reads_file(tmp_path: Path) -> None:
     ]
 
 
-def test_worker_job_parses_retry_settings() -> None:
+def test_worker_job_parses_timeout_settings() -> None:
     from openinflation_parser.orchestrator import WorkerJob
 
     job = WorkerJob.from_payload(
@@ -89,14 +89,10 @@ def test_worker_job_parses_retry_settings() -> None:
             "store_code": "C001",
             "output_dir": "./output",
             "api_timeout_ms": 120000,
-            "request_retries": 5,
-            "request_retry_backoff_sec": 2.5,
         }
     )
 
     assert job.api_timeout_ms == 120000.0
-    assert job.request_retries == 5
-    assert job.request_retry_backoff_sec == 2.5
 
 
 def test_worker_job_accepts_string_city_id() -> None:

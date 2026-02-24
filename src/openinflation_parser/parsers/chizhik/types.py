@@ -16,8 +16,6 @@ class ChizhikParserConfig:
     proxy: str | dict[str, Any] | None = None
     headless: bool = True
     timeout_ms: float = 90000.0
-    request_retries: int = 3
-    request_retry_backoff_sec: float = 1.5
     include_images: bool = False
     image_limit_per_product: int = 1
     strict_validation: bool = False

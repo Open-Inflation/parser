@@ -63,8 +63,6 @@ python -m openinflation_parser.orchestrator \
   --full-catalog \
   --max-pages-per-category 200 \
   --api-timeout-ms 120000 \
-  --request-retries 5 \
-  --request-retry-backoff-sec 2 \
   --ram-per-worker-gb 1.5 \
   --log-level INFO \
   --proxy-file ./proxies.txt
@@ -116,9 +114,9 @@ openinflation-orchestrator \
 
 - `{"action":"ping"}`
 - `{"action":"submit_store","store_code":"C001","city_id":3}`
-- `{"action":"submit_store","store_code":"C001","city_id":3,"full_catalog":true,"max_pages_per_category":200,"products_per_page":27,"api_timeout_ms":120000,"request_retries":5}`
-- `{"action":"submit_store","parser":"chizhik","store_code":"moskva","full_catalog":true,"max_pages_per_category":200,"api_timeout_ms":120000,"request_retries":5}`
-- `{"action":"submit_store","parser":"perekrestok","store_code":"1","city_id":81,"full_catalog":true,"max_pages_per_category":200,"api_timeout_ms":120000,"request_retries":5}`
+- `{"action":"submit_store","store_code":"C001","city_id":3,"full_catalog":true,"max_pages_per_category":200,"products_per_page":27,"api_timeout_ms":120000}`
+- `{"action":"submit_store","parser":"chizhik","store_code":"moskva","full_catalog":true,"max_pages_per_category":200,"api_timeout_ms":120000}`
+- `{"action":"submit_store","parser":"perekrestok","store_code":"1","city_id":81,"full_catalog":true,"max_pages_per_category":200,"api_timeout_ms":120000}`
 - `{"action":"status"}`
 - `{"action":"status","job_id":"<id>"}`
 - `{"action":"jobs"}`

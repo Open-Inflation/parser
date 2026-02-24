@@ -23,8 +23,6 @@ class SubmitStoreRequest(RequestModel):
     country_id: int | None = None
     city_id: int | str | None = None
     api_timeout_ms: float | None = None
-    request_retries: int | None = None
-    request_retry_backoff_sec: float | None = None
     category_limit: int | None = None
     pages_per_category: int | None = None
     max_pages_per_category: int | None = None

@@ -22,7 +22,7 @@ async def execute_store_job(
     worker_id: int,
 ) -> tuple[str, str]:
     LOGGER.info(
-        "Worker %s started job %s for store=%s parser=%s city_id=%s full_catalog=%s timeout_ms=%s retries=%s strict_validation=%s",
+        "Worker %s started job %s for store=%s parser=%s city_id=%s full_catalog=%s timeout_ms=%s strict_validation=%s",
         worker_id,
         job.job_id,
         job.store_code,
@@ -30,7 +30,6 @@ async def execute_store_job(
         job.city_id,
         job.full_catalog,
         job.api_timeout_ms,
-        job.request_retries,
         job.strict_validation,
     )
 
@@ -40,8 +39,6 @@ async def execute_store_job(
             country_id=job.country_id,
             city_id=job.city_id,
             timeout_ms=job.api_timeout_ms,
-            request_retries=job.request_retries,
-            request_retry_backoff_sec=job.request_retry_backoff_sec,
             include_images=job.include_images,
             strict_validation=job.strict_validation,
         ),

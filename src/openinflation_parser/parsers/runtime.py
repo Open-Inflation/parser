@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from io import BytesIO
-from typing import Any, Awaitable, Callable, TypeVar
+from typing import Any
 
 
 LOGGER = logging.getLogger(__name__)
-T = TypeVar("T")
 
 
 class ParserRuntimeMixin:
-    """Shared retry/image/string helpers for parser implementations."""
+    """Shared API-call/image/string helpers for parser implementations."""
 
     config: Any
 
@@ -21,40 +19,6 @@ class ParserRuntimeMixin:
             return None
         token = value.strip()
         return token or None
-
-    @staticmethod
-    def _is_timeout_error(exc: Exception) -> bool:
-        message = str(exc).lower()
-        return "timeout" in message or "fetch failed" in message
-
-    async def _with_retry(
-        self,
-        *,
-        operation: str,
-        call: Callable[[], Awaitable[T]],
-    ) -> T:
-        retries = max(0, int(getattr(self.config, "request_retries", 0)))
-        backoff = float(getattr(self.config, "request_retry_backoff_sec", 1.0))
-
-        attempt = 0
-        while True:
-            attempt += 1
-            try:
-                return await call()
-            except Exception as exc:
-                is_retryable = self._is_timeout_error(exc)
-                if (not is_retryable) or attempt > retries + 1:
-                    raise
-                delay = backoff * (2 ** (attempt - 1))
-                LOGGER.warning(
-                    "Retrying operation %s after error (%s/%s): %s. Sleep %.1fs",
-                    operation,
-                    attempt,
-                    retries + 1,
-                    exc,
-                    delay,
-                )
-                await asyncio.sleep(delay)
 
     @classmethod
     def _merge_categories_uid(cls, *groups: list[str] | None) -> list[str] | None:

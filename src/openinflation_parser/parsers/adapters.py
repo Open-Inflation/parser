@@ -14,8 +14,6 @@ class ParserRunSettings:
     country_id: int
     city_id: int | str | None
     timeout_ms: float
-    request_retries: int
-    request_retry_backoff_sec: float
     include_images: bool
     strict_validation: bool
 
@@ -58,8 +56,6 @@ class FixPriceAdapter:
             city_id=self._fixprice_city_id(settings.city_id),
             proxy=proxy,
             timeout_ms=settings.timeout_ms,
-            request_retries=settings.request_retries,
-            request_retry_backoff_sec=settings.request_retry_backoff_sec,
             include_images=settings.include_images,
             strict_validation=settings.strict_validation,
         )
@@ -84,8 +80,6 @@ class ChizhikAdapter:
             city_id=chizhik_city_id,
             proxy=proxy,
             timeout_ms=settings.timeout_ms,
-            request_retries=settings.request_retries,
-            request_retry_backoff_sec=settings.request_retry_backoff_sec,
             include_images=settings.include_images,
             strict_validation=settings.strict_validation,
         )
@@ -123,8 +117,6 @@ class PerekrestokAdapter:
             city_id=self._perekrestok_city_id(settings.city_id),
             proxy=proxy,
             timeout_ms=settings.timeout_ms,
-            request_retries=settings.request_retries,
-            request_retry_backoff_sec=settings.request_retry_backoff_sec,
             include_images=settings.include_images,
             strict_validation=settings.strict_validation,
         )

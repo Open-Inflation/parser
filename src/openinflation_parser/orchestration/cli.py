@@ -62,18 +62,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=90000.0,
         help="Parser API request timeout in milliseconds.",
     )
-    parser.add_argument(
-        "--request-retries",
-        type=int,
-        default=3,
-        help="Retry count for retryable API errors (timeouts).",
-    )
-    parser.add_argument(
-        "--request-retry-backoff-sec",
-        type=float,
-        default=1.5,
-        help="Base backoff (seconds) for retries (exponential).",
-    )
 
     parser.add_argument(
         "--category-limit",
@@ -189,8 +177,6 @@ async def run_orchestrator(args: argparse.Namespace) -> None:
         country_id=args.country_id,
         city_id=normalize_city_id(args.city_id),
         api_timeout_ms=max(1000.0, args.api_timeout_ms),
-        request_retries=max(0, args.request_retries),
-        request_retry_backoff_sec=max(0.1, args.request_retry_backoff_sec),
         category_limit=max(1, args.category_limit),
         pages_per_category=max(1, args.pages_per_category),
         max_pages_per_category=max(1, args.max_pages_per_category),
@@ -223,8 +209,6 @@ async def run_orchestrator(args: argparse.Namespace) -> None:
                 "full_catalog": args.full_catalog,
                 "max_pages_per_category": max(1, args.max_pages_per_category),
                 "api_timeout_ms": max(1000.0, args.api_timeout_ms),
-                "request_retries": max(0, args.request_retries),
-                "request_retry_backoff_sec": max(0.1, args.request_retry_backoff_sec),
                 "strict_validation": args.strict_validation,
                 "jobs_max_history": max(1, args.jobs_max_history),
                 "jobs_retention_sec": max(60, args.jobs_retention_sec),
