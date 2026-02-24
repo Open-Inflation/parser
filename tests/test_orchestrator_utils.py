@@ -36,6 +36,17 @@ def test_choose_worker_count_with_max_limit() -> None:
     assert workers == 2
 
 
+def test_choose_worker_count_with_proxy_reuse_factor() -> None:
+    workers = choose_worker_count(
+        available_ram_gb=20.0,
+        ram_per_worker_gb=2.0,
+        proxies_count=3,
+        max_workers=None,
+        proxy_reuse_factor=2,
+    )
+    assert workers == 6
+
+
 def test_choose_worker_count_min_one_worker() -> None:
     workers = choose_worker_count(
         available_ram_gb=0.2,

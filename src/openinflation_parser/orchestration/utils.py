@@ -62,6 +62,7 @@ def choose_worker_count(
     ram_per_worker_gb: float,
     proxies_count: int,
     max_workers: int | None,
+    proxy_reuse_factor: int = 1,
 ) -> int:
     """Select worker count based on RAM and proxy availability."""
     safe_ram_per_worker = ram_per_worker_gb if ram_per_worker_gb > 0 else 1.0
@@ -69,7 +70,12 @@ def choose_worker_count(
     if by_ram < 1:
         by_ram = 1
 
-    by_proxy = proxies_count if proxies_count > 0 else by_ram
+    safe_proxy_reuse_factor = max(1, proxy_reuse_factor)
+    by_proxy = (
+        proxies_count * safe_proxy_reuse_factor
+        if proxies_count > 0
+        else by_ram
+    )
     workers = min(by_ram, by_proxy)
 
     if max_workers is not None:

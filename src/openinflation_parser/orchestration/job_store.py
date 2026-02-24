@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 import json
 import logging
 import sqlite3
@@ -53,7 +54,7 @@ class JobStore:
         return sqlite3.connect(path)
 
     def _init_db(self) -> None:
-        with self._connect() as conn:
+        with closing(self._connect()) as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS jobs (
@@ -66,7 +67,7 @@ class JobStore:
             conn.commit()
 
     def _load_from_db(self) -> None:
-        with self._connect() as conn:
+        with closing(self._connect()) as conn:
             rows = conn.execute("SELECT payload FROM jobs").fetchall()
         loaded = 0
         for (payload_str,) in rows:
@@ -95,7 +96,7 @@ class JobStore:
             or job.get("created_at")
             or datetime.now(timezone.utc).isoformat()
         )
-        with self._connect() as conn:
+        with closing(self._connect()) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO jobs(job_id, payload, updated_at) VALUES(?,?,?)",
                 (job_id, payload, updated_at),
@@ -105,7 +106,7 @@ class JobStore:
     def _persist_delete(self, job_ids: list[str]) -> None:
         if self.sqlite_path is None or not job_ids:
             return
-        with self._connect() as conn:
+        with closing(self._connect()) as conn:
             conn.executemany("DELETE FROM jobs WHERE job_id = ?", [(job_id,) for job_id in job_ids])
             conn.commit()
 

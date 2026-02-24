@@ -6,6 +6,7 @@ import json
 import logging
 from pathlib import Path
 
+from ..parsers import PARSER_REGISTRY
 from .models import JobDefaults, normalize_city_id
 from .server import OrchestratorServer
 from .utils import detect_available_ram_gb, load_proxy_list, setup_logging, choose_worker_count
@@ -151,11 +152,13 @@ async def run_orchestrator(args: argparse.Namespace) -> None:
     if available_ram_gb is None:
         available_ram_gb = detect_available_ram_gb()
 
+    proxy_reuse_factor = max(1, len(PARSER_REGISTRY))
     worker_count = choose_worker_count(
         available_ram_gb=available_ram_gb,
         ram_per_worker_gb=args.ram_per_worker_gb,
         proxies_count=len(proxies),
         max_workers=args.max_workers,
+        proxy_reuse_factor=proxy_reuse_factor,
     )
 
     defaults = JobDefaults(
@@ -190,6 +193,7 @@ async def run_orchestrator(args: argparse.Namespace) -> None:
                 "available_ram_gb": round(available_ram_gb, 2),
                 "ram_per_worker_gb": args.ram_per_worker_gb,
                 "proxies": len(proxies),
+                "proxy_reuse_factor": proxy_reuse_factor,
                 "output_dir": str(Path(args.output_dir).expanduser().resolve()),
                 "log_level": args.log_level,
                 "full_catalog": args.full_catalog,

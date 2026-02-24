@@ -5,6 +5,7 @@ import contextlib
 import json
 import logging
 import multiprocessing as mp
+from dataclasses import asdict
 from typing import Any
 from uuid import uuid4
 
@@ -54,9 +55,14 @@ class OrchestratorServer:
         self.log_level = log_level
 
         self._ctx = mp.get_context("spawn")
-        self._job_queue = self._ctx.Queue()
         self._result_queue = self._ctx.Queue()
         self._workers: list[mp.Process] = []
+        self._worker_queues: dict[int, Any] = {}
+        self._worker_busy: dict[int, bool] = {}
+        self._worker_current_job: dict[int, str | None] = {}
+        self._pending_jobs: list[WorkerJob] = []
+        self._active_proxy_parser_pairs: set[tuple[str, str]] = set()
+        self._job_proxy_pair: dict[str, tuple[str, str]] = {}
         self._job_store = JobStore(
             max_history=jobs_max_history,
             retention_seconds=jobs_retention_sec,
@@ -75,26 +81,160 @@ class OrchestratorServer:
     def start_workers(self) -> None:
         LOGGER.info("Starting %s workers", self.worker_count)
         for index in range(self.worker_count):
+            worker_id = index + 1
+            worker_queue = self._ctx.Queue()
             process = self._ctx.Process(
                 target=worker_process_loop,
                 args=(
-                    index + 1,
+                    worker_id,
                     self._worker_proxy(index),
                     self.log_level,
-                    self._job_queue,
+                    worker_queue,
                     self._result_queue,
                 ),
                 daemon=False,
-                name=f"orchestrator-worker-{index + 1}",
+                name=f"orchestrator-worker-{worker_id}",
             )
             process.start()
             LOGGER.info(
                 "Worker started: index=%s pid=%s proxy=%s",
-                index + 1,
+                worker_id,
                 process.pid,
                 self._worker_proxy(index) or "none",
             )
             self._workers.append(process)
+            self._worker_queues[worker_id] = worker_queue
+            self._worker_busy[worker_id] = False
+            self._worker_current_job[worker_id] = None
+
+    @staticmethod
+    def _worker_id_from_value(value: Any) -> int | None:
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            token = value.strip()
+            if not token:
+                return None
+            try:
+                return int(token)
+            except ValueError:
+                return None
+        return None
+
+    def _pair_for_job_and_worker(
+        self,
+        *,
+        job: WorkerJob,
+        worker_id: int,
+    ) -> tuple[str, str] | None:
+        proxy = self._worker_proxy(worker_id - 1)
+        if proxy is None:
+            return None
+        return (job.parser_name, proxy)
+
+    def _reserve_worker_slot_for_job(self, *, worker_id: int, job: WorkerJob) -> None:
+        self._worker_busy[worker_id] = True
+        self._worker_current_job[worker_id] = job.job_id
+        pair = self._pair_for_job_and_worker(job=job, worker_id=worker_id)
+        if pair is not None:
+            self._active_proxy_parser_pairs.add(pair)
+            self._job_proxy_pair[job.job_id] = pair
+
+    def _release_worker_slot_for_job(self, *, job_id: str, worker_id: int | None) -> None:
+        pair = self._job_proxy_pair.pop(job_id, None)
+        if pair is not None:
+            self._active_proxy_parser_pairs.discard(pair)
+        if worker_id is not None:
+            self._worker_busy[worker_id] = False
+            if self._worker_current_job.get(worker_id) == job_id:
+                self._worker_current_job[worker_id] = None
+            return
+
+        for candidate_worker_id, current_job_id in self._worker_current_job.items():
+            if current_job_id == job_id:
+                self._worker_busy[candidate_worker_id] = False
+                self._worker_current_job[candidate_worker_id] = None
+                break
+
+    def _can_dispatch_job_to_worker(self, *, job: WorkerJob, worker_id: int) -> bool:
+        if self._worker_busy.get(worker_id, False):
+            return False
+        process = self._workers[worker_id - 1]
+        if not process.is_alive():
+            return False
+        pair = self._pair_for_job_and_worker(job=job, worker_id=worker_id)
+        if pair is None:
+            return True
+        return pair not in self._active_proxy_parser_pairs
+
+    async def _try_dispatch_jobs(self) -> int:
+        if not self._pending_jobs:
+            return 0
+
+        dispatched = 0
+        for worker_id in range(1, len(self._workers) + 1):
+            if not self._pending_jobs:
+                break
+            if self._worker_busy.get(worker_id, False):
+                continue
+
+            selected_index: int | None = None
+            for index, job in enumerate(self._pending_jobs):
+                if self._can_dispatch_job_to_worker(job=job, worker_id=worker_id):
+                    selected_index = index
+                    break
+            if selected_index is None:
+                continue
+
+            job = self._pending_jobs.pop(selected_index)
+            self._reserve_worker_slot_for_job(worker_id=worker_id, job=job)
+            queue = self._worker_queues[worker_id]
+            await asyncio.to_thread(queue.put, asdict(job))
+
+            job_state = self._job_store.get(job.job_id)
+            if job_state is not None:
+                job_state["worker_id"] = worker_id
+                self._job_store.upsert(job_state)
+            dispatched += 1
+            LOGGER.info(
+                "Job dispatched: id=%s worker=%s parser=%s proxy=%s pending=%s",
+                job.job_id,
+                worker_id,
+                job.parser_name,
+                self._worker_proxy(worker_id - 1) or "none",
+                len(self._pending_jobs),
+            )
+        return dispatched
+
+    def _reconcile_orphaned_running_jobs(self) -> int:
+        worker_alive = {idx + 1: process.is_alive() for idx, process in enumerate(self._workers)}
+        reconciled = 0
+        for job_state in self._job_store.values():
+            status = str(job_state.get("status", ""))
+            if status not in {"running", "queued"}:
+                continue
+
+            worker_id = self._worker_id_from_value(job_state.get("worker_id"))
+            if worker_id is None or worker_alive.get(worker_id, False):
+                continue
+
+            job_id = str(job_state.get("job_id", "unknown"))
+            worker_label = str(worker_id) if worker_id is not None else "unknown"
+            job_state["status"] = "error"
+            job_state["finished_at"] = utc_now_iso()
+            job_state["message"] = (
+                "Worker process stopped before reporting job completion "
+                f"(worker_id={worker_label})."
+            )
+            self._job_store.upsert(job_state)
+            self._release_worker_slot_for_job(job_id=job_id, worker_id=worker_id)
+            reconciled += 1
+            LOGGER.warning(
+                "Job %s marked as error due to missing worker heartbeat: worker_id=%s",
+                job_id,
+                worker_label,
+            )
+        return reconciled
 
     async def _collect_results(self) -> None:
         while True:
@@ -111,6 +251,11 @@ class OrchestratorServer:
                 continue
             job_state = self._job_store.get(job_id)
             if job_state is None:
+                self._release_worker_slot_for_job(
+                    job_id=job_id,
+                    worker_id=self._worker_id_from_value(event.get("worker_id")),
+                )
+                await self._try_dispatch_jobs()
                 LOGGER.debug("Result collector skipped unknown job_id=%s", job_id)
                 continue
 
@@ -119,7 +264,9 @@ class OrchestratorServer:
             if event_name == "started":
                 job_state["status"] = "running"
                 job_state["started_at"] = event.get("timestamp")
-                job_state["worker_id"] = event.get("worker_id")
+                event_worker_id = self._worker_id_from_value(event.get("worker_id"))
+                if event_worker_id is not None:
+                    job_state["worker_id"] = event_worker_id
                 self._job_store.upsert(job_state)
                 LOGGER.info(
                     "Job %s started on worker %s",
@@ -129,9 +276,11 @@ class OrchestratorServer:
                 continue
 
             if event_name == "finished":
+                finished_worker_id = self._worker_id_from_value(event.get("worker_id"))
                 job_state["status"] = event.get("status", "error")
                 job_state["finished_at"] = event.get("timestamp")
-                job_state["worker_id"] = event.get("worker_id")
+                if finished_worker_id is not None:
+                    job_state["worker_id"] = finished_worker_id
                 if "message" in event:
                     job_state["message"] = event["message"]
                 if "traceback" in event:
@@ -147,6 +296,8 @@ class OrchestratorServer:
                     job_state["status"],
                     event.get("worker_id"),
                 )
+                self._release_worker_slot_for_job(job_id=job_id, worker_id=finished_worker_id)
+                await self._try_dispatch_jobs()
                 continue
 
             LOGGER.warning("Unknown result event for job %s: %s", job_id, event_name)
@@ -154,13 +305,17 @@ class OrchestratorServer:
     async def _log_heartbeat(self) -> None:
         while not self._stop_event.is_set():
             await asyncio.sleep(15.0)
+            reconciled = self._reconcile_orphaned_running_jobs()
+            if reconciled > 0:
+                await self._try_dispatch_jobs()
             pruned = self._job_store.prune()
             summary = self._job_store.summary()
             LOGGER.debug(
-                "Heartbeat: workers=%s jobs_total=%s jobs_by_status=%s pruned=%s",
+                "Heartbeat: workers=%s jobs_total=%s jobs_by_status=%s reconciled=%s pruned=%s",
                 len(self._workers),
                 summary["jobs_total"],
                 summary["jobs_by_status"],
+                reconciled,
                 pruned,
             )
 
@@ -243,10 +398,10 @@ class OrchestratorServer:
         }
         self._job_store.upsert(state)
         self._job_store.prune()
-
-        await asyncio.to_thread(self._job_queue.put, job.to_payload())
+        self._pending_jobs.append(job)
+        dispatched = await self._try_dispatch_jobs()
         LOGGER.info(
-            "Job enqueued: id=%s store=%s parser=%s city_id=%s full_catalog=%s timeout_ms=%s retries=%s category_limit=%s pages=%s max_pages=%s per_page=%s include_images=%s strict_validation=%s",
+            "Job enqueued: id=%s store=%s parser=%s city_id=%s full_catalog=%s timeout_ms=%s retries=%s category_limit=%s pages=%s max_pages=%s per_page=%s include_images=%s strict_validation=%s pending=%s dispatched_now=%s",
             job.job_id,
             job.store_code,
             job.parser_name,
@@ -260,6 +415,8 @@ class OrchestratorServer:
             job.products_per_page,
             job.include_images,
             job.strict_validation,
+            len(self._pending_jobs),
+            dispatched,
         )
         return {"job_id": job.job_id, "status": "queued"}
 
@@ -269,6 +426,7 @@ class OrchestratorServer:
             "workers_total": len(self._workers),
             "jobs_total": summary["jobs_total"],
             "jobs_by_status": summary["jobs_by_status"],
+            "jobs_pending_dispatch": len(self._pending_jobs),
         }
 
     def _workers_status(self) -> list[dict[str, Any]]:
@@ -280,6 +438,8 @@ class OrchestratorServer:
                     "pid": process.pid,
                     "alive": process.is_alive(),
                     "proxy": self._worker_proxy(idx),
+                    "busy": self._worker_busy.get(idx + 1, False),
+                    "job_id": self._worker_current_job.get(idx + 1),
                 }
             )
         return rows
@@ -361,28 +521,28 @@ class OrchestratorServer:
 
     async def run(self, *, bootstrap_store_code: str | None = None) -> None:
         websockets = require_websockets_module()
-        self.start_workers()
-        self._collector_task = asyncio.create_task(self._collect_results())
-        self._heartbeat_task = asyncio.create_task(self._log_heartbeat())
-
-        if bootstrap_store_code:
-            await self._enqueue_job(
-                {
-                    "store_code": bootstrap_store_code,
-                    "parser": self.defaults.parser_name,
-                }
-            )
-            LOGGER.info("Bootstrap job submitted for store_code=%s", bootstrap_store_code)
-        else:
-            LOGGER.info(
-                "No bootstrap store configured. Waiting for WebSocket action 'submit_store'."
-            )
-            LOGGER.info(
-                "Example: {\"action\":\"submit_store\",\"store_code\":\"C001\",\"city_id\":%s}",
-                self.defaults.city_id,
-            )
-
         try:
+            self.start_workers()
+            self._collector_task = asyncio.create_task(self._collect_results())
+            self._heartbeat_task = asyncio.create_task(self._log_heartbeat())
+
+            if bootstrap_store_code:
+                await self._enqueue_job(
+                    {
+                        "store_code": bootstrap_store_code,
+                        "parser": self.defaults.parser_name,
+                    }
+                )
+                LOGGER.info("Bootstrap job submitted for store_code=%s", bootstrap_store_code)
+            else:
+                LOGGER.info(
+                    "No bootstrap store configured. Waiting for WebSocket action 'submit_store'."
+                )
+                LOGGER.info(
+                    "Example: {\"action\":\"submit_store\",\"store_code\":\"C001\",\"city_id\":%s}",
+                    self.defaults.city_id,
+                )
+
             LOGGER.info("WebSocket server listening on ws://%s:%s", self.host, self.port)
             async with websockets.serve(self._handle_client, self.host, self.port):
                 await self._stop_event.wait()
@@ -396,8 +556,9 @@ class OrchestratorServer:
         self._is_stopped = True
 
         LOGGER.info("Stopping orchestrator workers")
-        for _ in self._workers:
-            await asyncio.to_thread(self._job_queue.put, None)
+        for worker_id, queue in self._worker_queues.items():
+            await asyncio.to_thread(queue.put, None)
+            LOGGER.debug("Stop signal sent to worker queue: worker=%s", worker_id)
 
         for process in self._workers:
             await asyncio.to_thread(process.join, 10.0)
@@ -415,5 +576,6 @@ class OrchestratorServer:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._heartbeat_task
 
-        self._job_queue.close()
+        for queue in self._worker_queues.values():
+            queue.close()
         self._result_queue.close()

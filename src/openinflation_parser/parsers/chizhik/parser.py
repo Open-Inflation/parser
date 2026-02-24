@@ -21,6 +21,7 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
         self.config = config or ChizhikParserConfig()
         self._api: Any = None
         self._city_cache: dict[str, AdministrativeUnit] = {}
+        self._product_info_cache: dict[int, dict[str, Any]] = {}
 
     async def __aenter__(self) -> "ChizhikParser":
         from chizhik_api import ChizhikAPI
@@ -78,6 +79,38 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
         if card.sku is not None:
             return card.sku
         return card.plu
+
+    @classmethod
+    def _product_id_from_raw(cls, value: Any) -> int | None:
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        token = cls._safe_non_empty_str(value)
+        if token is None:
+            return None
+        try:
+            return int(token)
+        except ValueError:
+            return None
+
+    async def _collect_product_info(self, *, product_id: int) -> dict[str, Any] | None:
+        cached = self._product_info_cache.get(product_id)
+        if cached is not None:
+            return cached
+
+        api = self._require_api()
+        response = await self._with_retry(
+            operation=f"catalog.product.info[{product_id}]",
+            call=lambda: api.Catalog.Product.info(
+                product_id=product_id,
+                city_id=self.config.city_id,
+            ),
+        )
+        payload = response.json()
+        if not isinstance(payload, dict):
+            return None
+
+        self._product_info_cache[product_id] = payload
+        return payload
 
     def build_catalog_queries(
         self,
@@ -164,12 +197,30 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
             return [], total_pages
 
         cards: list[Card] = []
+        enriched_count = 0
         for item in items:
             if not isinstance(item, dict):
                 continue
+            mapped_payload = item
+            product_id = self._product_id_from_raw(item.get("id"))
+            if product_id is not None:
+                try:
+                    product_info = await self._collect_product_info(product_id=product_id)
+                    if product_info is not None:
+                        merged_payload = dict(item)
+                        merged_payload.update(product_info)
+                        mapped_payload = merged_payload
+                        enriched_count += 1
+                except Exception as exc:
+                    LOGGER.warning(
+                        "Failed to collect product info: product_id=%s error=%s",
+                        product_id,
+                        exc,
+                    )
+
             main_image, gallery_images = await self._collect_product_images(
                 api=api,
-                product=item,
+                product=mapped_payload,
                 include_images=self.config.include_images,
                 images_field="images",
                 image_url_field="image",
@@ -177,7 +228,7 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
             )
             cards.append(
                 ChizhikMapper.map_product(
-                    item,
+                    mapped_payload,
                     main_image=main_image,
                     gallery_images=gallery_images,
                     strict_validation=self.config.strict_validation,
@@ -185,11 +236,12 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
             )
 
         LOGGER.info(
-            "Collected products page: category_id=%s slug=%s page=%s count=%s total_pages=%s",
+            "Collected products page: category_id=%s slug=%s page=%s count=%s enriched=%s total_pages=%s",
             query.category_id,
             query.category_slug,
             page,
             len(cards),
+            enriched_count,
             total_pages,
         )
         return cards, total_pages

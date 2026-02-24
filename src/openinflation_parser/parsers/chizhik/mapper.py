@@ -18,6 +18,12 @@ from ..model_builder import build_model
 class ChizhikMapper:
     """Mappers from Chizhik API contracts to openinflation dataclasses."""
 
+    COUNTRY_NAME_TO_CODE: dict[str, str] = {
+        "россия": "RUS",
+        "russia": "RUS",
+        "rus": "RUS",
+    }
+
     @classmethod
     def _build(
         cls,
@@ -61,6 +67,16 @@ class ChizhikMapper:
         if isinstance(value, str):
             return value
         return None
+
+    @classmethod
+    def _producer_country_from_raw(cls, value: Any) -> str | None:
+        token = cls._safe_str(value)
+        if token is None:
+            return None
+        normalized = token.strip().lower()
+        if not normalized:
+            return None
+        return cls.COUNTRY_NAME_TO_CODE.get(normalized)
 
     @staticmethod
     def _empty_schedule(*, strict_validation: bool) -> Schedule:
@@ -225,6 +241,7 @@ class ChizhikMapper:
     ) -> Card:
         raw_meta = product.get("meta_data")
         metadata: list[MetaData] | None = None
+        meta_by_code: dict[str, int | float | str] = {}
         if isinstance(raw_meta, list):
             prepared: list[MetaData] = []
             for item in raw_meta:
@@ -239,6 +256,7 @@ class ChizhikMapper:
                     continue
                 if not isinstance(value, (int, float, str)):
                     continue
+                meta_by_code.setdefault(alias, value)
                 prepared.append(
                     cls._build(
                         MetaData,
@@ -264,12 +282,12 @@ class ChizhikMapper:
             "season": None,
             "hit": None,
             "data_matrix": None,
-            "brand": None,
-            "producer_name": None,
-            "producer_country": None,
-            "composition": None,
+            "brand": cls._safe_str(meta_by_code.get("brand_name")),
+            "producer_name": cls._safe_str(meta_by_code.get("producer_name")),
+            "producer_country": cls._producer_country_from_raw(meta_by_code.get("country")),
+            "composition": cls._safe_str(meta_by_code.get("composition")),
             "meta_data": metadata,
-            "expiration_date_in_days": None,
+            "expiration_date_in_days": cls._safe_int(meta_by_code.get("exp_date_days")),
             "rating": cls._safe_float(product.get("rating")),
             "reviews_count": cls._safe_int(product.get("reviews_count")),
             "price": cls._safe_float(product.get("price")),
