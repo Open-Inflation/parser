@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openinflation-parser"
+version = "0.1.0"
+description = "Orchestrator and parser workers for OpenInflation data pipelines."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "GPL-3.0-or-later" }
+dependencies = [
+    "websockets>=12.0,<16.0",
+    "openinflation-dataclass>=0.1.0",
+]
+
+[project.optional-dependencies]
+fixprice = [
+    "fixprice-api>=0.2.2",
+]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[project.scripts]
+openinflation-orchestrator = "openinflation_parser.orchestrator:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
