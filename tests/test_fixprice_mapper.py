@@ -93,3 +93,86 @@ def test_map_product_does_not_invent_missing_values() -> None:
     assert mapped.title is None
     assert mapped.price is None
     assert mapped.categories_uid is None
+
+
+def test_map_store_without_warehouse_field_sets_type_none() -> None:
+    city = FixPriceMapper.map_city(
+        {"title": "X", "countryId": 2, "prefix": "г"},
+        country_id=2,
+    )
+    mapped = FixPriceMapper.map_store(
+        {
+            "pfm": "X001",
+            "address": "Addr",
+            "scheduleWeekdays": None,
+            "scheduleSaturday": None,
+            "scheduleSunday": None,
+            "temporarilyClosed": None,
+            "longitude": None,
+            "latitude": None,
+            # no "warehouse" key
+        },
+        administrative_unit=city,
+    )
+    assert mapped.retail_type is None
+
+
+def test_country_mapping_covers_snapshot_country_ids() -> None:
+    countries = _load_snapshot("ClassGeolocation.countries_list.json")
+
+    expected = {
+        2: "RUS",
+        3: "KAZ",
+        4: "GEO",
+        5: "KGZ",
+        6: "UZB",
+        7: "LVA",
+        8: "BLR",
+        9: "MNG",
+        10: "ARE",
+        11: "SRB",
+    }
+
+    ids = {row["id"] for row in countries}
+    assert set(expected).issubset(ids)
+
+    for country_id, code in expected.items():
+        assert FixPriceMapper.country_code_from_id(country_id) == code
+
+
+def test_mapper_is_strict_about_contract_types() -> None:
+    city = FixPriceMapper.map_city(
+        {
+            "title": "Test City",
+            "prefix": 123,
+            "countryId": "2",
+            "longitude": "55.75",
+            "latitude": "37.61",
+        },
+        country_id=None,
+    )
+    assert city.settlement_type is None
+    assert city.country is None
+    assert city.longitude is None
+    assert city.latitude is None
+
+    mapped = FixPriceMapper.map_product(
+        product={
+            "sku": "SKU-1",
+            "price": "10.50",
+            "unit": 1,
+            "inStock": "7",
+            "metaData": [
+                {"name": "ok", "alias": "ok", "value": "yes"},
+                {"name": "dict", "alias": "dict", "value": {"a": 1}},
+                {"name": "bool", "alias": "bool", "value": True},
+            ],
+            "category": {"id": 99},
+        }
+    )
+    assert mapped.unit is None
+    assert mapped.available_count is None
+    assert mapped.price == 10.5
+    assert mapped.meta_data is not None
+    assert len(mapped.meta_data) == 1
+    assert mapped.meta_data[0].value == "yes"

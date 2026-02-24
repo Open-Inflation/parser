@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import gzip
 import json
 import logging
@@ -151,6 +152,9 @@ class WorkerJob:
     output_dir: str
     country_id: int = 2
     city_id: int | None = None
+    api_timeout_ms: float = 90000.0
+    request_retries: int = 3
+    request_retry_backoff_sec: float = 1.5
     category_limit: int = 1
     pages_per_category: int = 1
     max_pages_per_category: int = 200
@@ -174,6 +178,11 @@ class WorkerJob:
             output_dir=str(payload["output_dir"]),
             country_id=int(payload.get("country_id", 2)),
             city_id=city_id,
+            api_timeout_ms=float(payload.get("api_timeout_ms", 90000.0)),
+            request_retries=int(payload.get("request_retries", 3)),
+            request_retry_backoff_sec=float(
+                payload.get("request_retry_backoff_sec", 1.5)
+            ),
             category_limit=int(payload.get("category_limit", 1)),
             pages_per_category=int(payload.get("pages_per_category", 1)),
             max_pages_per_category=int(payload.get("max_pages_per_category", 200)),
@@ -192,6 +201,9 @@ class JobDefaults:
     output_dir: str
     country_id: int
     city_id: int | None
+    api_timeout_ms: float
+    request_retries: int
+    request_retry_backoff_sec: float
     category_limit: int
     pages_per_category: int
     max_pages_per_category: int
@@ -207,13 +219,15 @@ async def _execute_store_job(
     worker_id: int,
 ) -> tuple[str, str]:
     LOGGER.info(
-        "Worker %s started job %s for store=%s parser=%s city_id=%s full_catalog=%s",
+        "Worker %s started job %s for store=%s parser=%s city_id=%s full_catalog=%s timeout_ms=%s retries=%s",
         worker_id,
         job.job_id,
         job.store_code,
         job.parser_name,
         job.city_id,
         job.full_catalog,
+        job.api_timeout_ms,
+        job.request_retries,
     )
 
     if job.parser_name != "fixprice":
@@ -227,6 +241,9 @@ async def _execute_store_job(
         country_id=job.country_id,
         city_id=job.city_id,
         proxy=proxy,
+        timeout_ms=job.api_timeout_ms,
+        request_retries=job.request_retries,
+        request_retry_backoff_sec=job.request_retry_backoff_sec,
         include_images=job.include_images,
     )
     parser = FixPriceParser(config)
@@ -413,6 +430,7 @@ class OrchestratorServer:
         self._jobs: dict[str, dict[str, Any]] = {}
         self._stop_event = asyncio.Event()
         self._collector_task: asyncio.Task[None] | None = None
+        self._heartbeat_task: asyncio.Task[None] | None = None
         self._is_stopped = False
 
     def _worker_proxy(self, index: int) -> str | None:
@@ -497,6 +515,17 @@ class OrchestratorServer:
 
             LOGGER.warning("Unknown result event for job %s: %s", job_id, event_name)
 
+    async def _log_heartbeat(self) -> None:
+        while not self._stop_event.is_set():
+            await asyncio.sleep(15.0)
+            summary = self._global_status()
+            LOGGER.debug(
+                "Heartbeat: workers=%s jobs_total=%s jobs_by_status=%s",
+                summary["workers_total"],
+                summary["jobs_total"],
+                summary["jobs_by_status"],
+            )
+
     async def _enqueue_job(self, request: dict[str, Any]) -> dict[str, Any]:
         store_code = str(request.get("store_code", "")).strip()
         if not store_code:
@@ -519,6 +548,20 @@ class OrchestratorServer:
             output_dir=str(request.get("output_dir", self.defaults.output_dir)),
             country_id=int(request.get("country_id", self.defaults.country_id)),
             city_id=city_id,
+            api_timeout_ms=float(request.get("api_timeout_ms", self.defaults.api_timeout_ms)),
+            request_retries=max(
+                0,
+                int(request.get("request_retries", self.defaults.request_retries)),
+            ),
+            request_retry_backoff_sec=max(
+                0.1,
+                float(
+                    request.get(
+                        "request_retry_backoff_sec",
+                        self.defaults.request_retry_backoff_sec,
+                    )
+                ),
+            ),
             category_limit=max(1, int(request.get("category_limit", self.defaults.category_limit))),
             pages_per_category=max(
                 1, int(request.get("pages_per_category", self.defaults.pages_per_category))
@@ -549,6 +592,9 @@ class OrchestratorServer:
             "parser": job.parser_name,
             "country_id": job.country_id,
             "city_id": job.city_id,
+            "api_timeout_ms": job.api_timeout_ms,
+            "request_retries": job.request_retries,
+            "request_retry_backoff_sec": job.request_retry_backoff_sec,
             "category_limit": job.category_limit,
             "pages_per_category": job.pages_per_category,
             "max_pages_per_category": job.max_pages_per_category,
@@ -560,12 +606,14 @@ class OrchestratorServer:
 
         await asyncio.to_thread(self._job_queue.put, job.to_payload())
         LOGGER.info(
-            "Job enqueued: id=%s store=%s parser=%s city_id=%s full_catalog=%s category_limit=%s pages=%s max_pages=%s per_page=%s include_images=%s",
+            "Job enqueued: id=%s store=%s parser=%s city_id=%s full_catalog=%s timeout_ms=%s retries=%s category_limit=%s pages=%s max_pages=%s per_page=%s include_images=%s",
             job.job_id,
             job.store_code,
             job.parser_name,
             job.city_id,
             job.full_catalog,
+            job.api_timeout_ms,
+            job.request_retries,
             job.category_limit,
             job.pages_per_category,
             job.max_pages_per_category,
@@ -672,9 +720,19 @@ class OrchestratorServer:
         websockets = _require_websockets_module()
         self.start_workers()
         self._collector_task = asyncio.create_task(self._collect_results())
+        self._heartbeat_task = asyncio.create_task(self._log_heartbeat())
 
         if bootstrap_store_code:
             await self._enqueue_job({"store_code": bootstrap_store_code})
+            LOGGER.info("Bootstrap job submitted for store_code=%s", bootstrap_store_code)
+        else:
+            LOGGER.info(
+                "No bootstrap store configured. Waiting for WebSocket action 'submit_store'."
+            )
+            LOGGER.info(
+                "Example: {\"action\":\"submit_store\",\"store_code\":\"C001\",\"city_id\":%s}",
+                self.defaults.city_id,
+            )
 
         try:
             LOGGER.info("WebSocket server listening on ws://%s:%s", self.host, self.port)
@@ -704,6 +762,10 @@ class OrchestratorServer:
         await asyncio.to_thread(self._result_queue.put, None)
         if self._collector_task is not None:
             await self._collector_task
+        if self._heartbeat_task is not None:
+            self._heartbeat_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._heartbeat_task
 
         self._job_queue.close()
         self._result_queue.close()
@@ -718,6 +780,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", default="./output", help="Output directory for payload files")
     parser.add_argument("--country-id", type=int, default=2, help="Default country id")
     parser.add_argument("--city-id", type=int, default=None, help="Default city id")
+    parser.add_argument(
+        "--api-timeout-ms",
+        type=float,
+        default=90000.0,
+        help="FixPrice API request timeout in milliseconds.",
+    )
+    parser.add_argument(
+        "--request-retries",
+        type=int,
+        default=3,
+        help="Retry count for retryable API errors (timeouts).",
+    )
+    parser.add_argument(
+        "--request-retry-backoff-sec",
+        type=float,
+        default=1.5,
+        help="Base backoff (seconds) for retries (exponential).",
+    )
 
     parser.add_argument(
         "--category-limit",
@@ -808,6 +888,9 @@ async def _run_orchestrator(args: argparse.Namespace) -> None:
         output_dir=args.output_dir,
         country_id=args.country_id,
         city_id=args.city_id,
+        api_timeout_ms=max(1000.0, args.api_timeout_ms),
+        request_retries=max(0, args.request_retries),
+        request_retry_backoff_sec=max(0.1, args.request_retry_backoff_sec),
         category_limit=max(1, args.category_limit),
         pages_per_category=max(1, args.pages_per_category),
         max_pages_per_category=max(1, args.max_pages_per_category),
@@ -831,6 +914,9 @@ async def _run_orchestrator(args: argparse.Namespace) -> None:
                 "log_level": args.log_level,
                 "full_catalog": args.full_catalog,
                 "max_pages_per_category": max(1, args.max_pages_per_category),
+                "api_timeout_ms": max(1000.0, args.api_timeout_ms),
+                "request_retries": max(0, args.request_retries),
+                "request_retry_backoff_sec": max(0.1, args.request_retry_backoff_sec),
             },
             ensure_ascii=False,
         ),

@@ -42,6 +42,9 @@ python -m openinflation_parser.orchestrator \
   --country-id 2 \
   --full-catalog \
   --max-pages-per-category 200 \
+  --api-timeout-ms 120000 \
+  --request-retries 5 \
+  --request-retry-backoff-sec 2 \
   --ram-per-worker-gb 1.5 \
   --log-level INFO \
   --proxy-file ./proxies.txt
@@ -49,11 +52,15 @@ python -m openinflation_parser.orchestrator \
 
 Для подробного трассинга можно использовать `--log-level DEBUG`.
 
+Важно: оркестратор в этом режиме только поднимает воркеры и ждёт задачи по WebSocket (`submit_store`).
+Чтобы запустить парсинг сразу при старте, передайте `--bootstrap-store-code <PFM>`.
+В режиме `--full-catalog` парсер обходит только leaf-категории (subcategories), а root-категория запрашивается только если у неё нет детей.
+
 ### Основные websocket actions
 
 - `{"action":"ping"}`
 - `{"action":"submit_store","store_code":"C001","city_id":3}`
-- `{"action":"submit_store","store_code":"C001","city_id":3,"full_catalog":true,"max_pages_per_category":200,"products_per_page":27}`
+- `{"action":"submit_store","store_code":"C001","city_id":3,"full_catalog":true,"max_pages_per_category":200,"products_per_page":27,"api_timeout_ms":120000,"request_retries":5}`
 - `{"action":"status"}`
 - `{"action":"status","job_id":"<id>"}`
 - `{"action":"jobs"}`

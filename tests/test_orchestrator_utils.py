@@ -65,3 +65,23 @@ def test_load_proxy_list_deduplicates_and_reads_file(tmp_path: Path) -> None:
         "http://127.0.0.1:8080",
         "socks5://127.0.0.1:9090",
     ]
+
+
+def test_worker_job_parses_retry_settings() -> None:
+    from openinflation_parser.orchestrator import WorkerJob
+
+    job = WorkerJob.from_payload(
+        {
+            "job_id": "j1",
+            "parser_name": "fixprice",
+            "store_code": "C001",
+            "output_dir": "./output",
+            "api_timeout_ms": 120000,
+            "request_retries": 5,
+            "request_retry_backoff_sec": 2.5,
+        }
+    )
+
+    assert job.api_timeout_ms == 120000.0
+    assert job.request_retries == 5
+    assert job.request_retry_backoff_sec == 2.5
