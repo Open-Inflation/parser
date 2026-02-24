@@ -123,3 +123,13 @@ def test_parser_registry_includes_chizhik() -> None:
 def test_parser_adapter_registry_includes_fixprice() -> None:
     adapter = get_parser_adapter("fixprice")
     assert adapter.name == "fixprice"
+
+
+def test_parser_registry_includes_perekrestok() -> None:
+    parser_cls = get_parser("perekrestok")
+    assert parser_cls.__name__ == "PerekrestokParser"
+
+
+def test_parser_adapter_registry_includes_perekrestok() -> None:
+    adapter = get_parser_adapter("perekrestok")
+    assert adapter.name == "perekrestok"

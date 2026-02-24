@@ -4,10 +4,12 @@ from .adapters import ParserRunSettings, get_parser_adapter
 from .base import StoreParser
 from .chizhik import ChizhikParser, ChizhikParserConfig
 from .fixprice import FixPriceParser, FixPriceParserConfig
+from .perekrestok import PerekrestokParser, PerekrestokParserConfig
 
 PARSER_REGISTRY: dict[str, type[StoreParser]] = {
     "chizhik": ChizhikParser,
     "fixprice": FixPriceParser,
+    "perekrestok": PerekrestokParser,
 }
 
 
@@ -24,6 +26,8 @@ __all__ = [
     "ChizhikParserConfig",
     "FixPriceParser",
     "FixPriceParserConfig",
+    "PerekrestokParser",
+    "PerekrestokParserConfig",
     "ParserRunSettings",
     "StoreParser",
     "get_parser_adapter",

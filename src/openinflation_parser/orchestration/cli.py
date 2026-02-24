@@ -23,7 +23,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--parser",
         default="fixprice",
-        choices=["fixprice", "chizhik"],
+        choices=["fixprice", "chizhik", "perekrestok"],
         help="Parser name",
     )
     parser.add_argument("--output-dir", default="./output", help="Output directory for payload files")
@@ -32,7 +32,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--city-id",
         type=str,
         default=None,
-        help="Default city id (int for fixprice, string/int for chizhik).",
+        help="Default city id (int for fixprice/perekrestok, string/int for chizhik).",
     )
     parser.add_argument(
         "--api-timeout-ms",

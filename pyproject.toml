@@ -21,6 +21,9 @@ fixprice = [
 chizhik = [
     "chizhik_api>=0.2.4",
 ]
+perekrestok = [
+    "perekrestok_api>=0.2.2",
+]
 dev = [
     "pytest>=8.0.0",
 ]

@@ -39,6 +39,9 @@
 - `openinflation_parser.parsers.chizhik.ChizhikParser`:
   - работает на библиотеке `chizhik_api`;
   - маппит API-контракты в `openinflation_dataclass` (`Category`, `Card`, `AdministrativeUnit`, `RetailUnit`).
+- `openinflation_parser.parsers.perekrestok.PerekrestokParser`:
+  - работает на библиотеке `perekrestok_api`;
+  - маппит API-контракты в `openinflation_dataclass` (`Category`, `Card`, `AdministrativeUnit`, `RetailUnit`).
 
 ## Установка
 
@@ -92,12 +95,27 @@ openinflation-orchestrator \
   --log-level DEBUG
 ```
 
+Пример для Перекрёстка:
+```bash
+openinflation-orchestrator \
+  --parser perekrestok \
+  --host 127.0.0.1 \
+  --port 8765 \
+  --output-dir ./output \
+  --city-id 81 \
+  --full-catalog \
+  --max-pages-per-category 200 \
+  --bootstrap-store-code 1 \
+  --log-level DEBUG
+```
+
 ### Основные websocket actions
 
 - `{"action":"ping"}`
 - `{"action":"submit_store","store_code":"C001","city_id":3}`
 - `{"action":"submit_store","store_code":"C001","city_id":3,"full_catalog":true,"max_pages_per_category":200,"products_per_page":27,"api_timeout_ms":120000,"request_retries":5}`
 - `{"action":"submit_store","parser":"chizhik","store_code":"moskva","full_catalog":true,"max_pages_per_category":200,"api_timeout_ms":120000,"request_retries":5}`
+- `{"action":"submit_store","parser":"perekrestok","store_code":"1","city_id":81,"full_catalog":true,"max_pages_per_category":200,"api_timeout_ms":120000,"request_retries":5}`
 - `{"action":"status"}`
 - `{"action":"status","job_id":"<id>"}`
 - `{"action":"jobs"}`
