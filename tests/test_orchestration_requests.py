@@ -320,6 +320,8 @@ def test_present_job_contains_signed_download_url(tmp_path: Path) -> None:
     artifact = tmp_path / "store.json.gz"
     artifact.write_bytes(b"payload")
     checksum = server._sha256_file(str(artifact))
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=3600)
+    expires_ts = int(expires_at.timestamp())
     job = {
         "job_id": "job-dl-1",
         "status": "success",
@@ -327,18 +329,22 @@ def test_present_job_contains_signed_download_url(tmp_path: Path) -> None:
         "finished_at": "2026-01-01T00:01:00+00:00",
         "output_gz": str(artifact),
         "output_gz_sha256": checksum,
+        "download_expires_ts": expires_ts,
+        "download_expires_at": expires_at.isoformat(),
     }
 
     presented = server._present_job(job)
     assert presented["download_sha256"] == checksum
     assert "download_url" in presented
     assert "download_expires_at" in presented
+    assert "download_expires_ts" not in presented
 
     parsed = urlparse(str(presented["download_url"]))
     assert parsed.path == "/download"
     query = parse_qs(parsed.query)
     assert query["job_id"][0] == "job-dl-1"
     expires = int(query["expires"][0])
+    assert expires == expires_ts
     signed_checksum = query["sha256"][0]
     signature = query["sig"][0]
     assert signed_checksum == checksum
@@ -361,6 +367,7 @@ def test_present_job_omits_download_fields_when_file_missing() -> None:
         jobs_db_path=None,
         download_secret="test-secret",
     )
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=3600)
     job = {
         "job_id": "job-dl-2",
         "status": "success",
@@ -368,9 +375,94 @@ def test_present_job_omits_download_fields_when_file_missing() -> None:
         "finished_at": "2026-01-01T00:01:00+00:00",
         "output_gz": "/tmp/does-not-exist.json.gz",
         "output_gz_sha256": "deadbeef",
+        "download_expires_ts": int(expires_at.timestamp()),
+        "download_expires_at": expires_at.isoformat(),
     }
 
     presented = server._present_job(job)
     assert "download_url" not in presented
     assert "download_sha256" not in presented
     assert "download_expires_at" not in presented
+
+
+def test_cleanup_expired_download_artifacts_removes_files(tmp_path: Path) -> None:
+    defaults = _job_defaults()
+    server = OrchestratorServer(
+        host="127.0.0.1",
+        port=8765,
+        worker_count=1,
+        proxies=[],
+        defaults=defaults,
+        jobs_db_path=None,
+        download_secret="test-secret",
+    )
+
+    output_json = tmp_path / "job.json"
+    output_gz = tmp_path / "job.json.gz"
+    output_json.write_text("{}", encoding="utf-8")
+    output_gz.write_bytes(b"payload")
+
+    server._job_store.upsert(
+        {
+            "job_id": "job-expired-1",
+            "status": "success",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "finished_at": "2026-01-01T00:01:00+00:00",
+            "output_json": str(output_json),
+            "output_gz": str(output_gz),
+            "output_gz_sha256": server._sha256_file(str(output_gz)),
+            "download_expires_ts": int(datetime.now(timezone.utc).timestamp()) - 1,
+            "download_expires_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+
+    cleaned = server._cleanup_expired_download_artifacts()
+    assert cleaned == 1
+    assert not output_json.exists()
+    assert not output_gz.exists()
+
+    job = server._job_store.get("job-expired-1")
+    assert job is not None
+    assert "output_json" not in job
+    assert "output_gz" not in job
+    assert "output_gz_sha256" not in job
+    assert "download_expires_ts" not in job
+    assert "artifacts_deleted_at" in job
+
+
+def test_cleanup_expired_download_artifacts_skips_active_links(tmp_path: Path) -> None:
+    defaults = _job_defaults()
+    server = OrchestratorServer(
+        host="127.0.0.1",
+        port=8765,
+        worker_count=1,
+        proxies=[],
+        defaults=defaults,
+        jobs_db_path=None,
+        download_secret="test-secret",
+    )
+
+    output_json = tmp_path / "job_active.json"
+    output_gz = tmp_path / "job_active.json.gz"
+    output_json.write_text("{}", encoding="utf-8")
+    output_gz.write_bytes(b"payload")
+
+    future_expires = datetime.now(timezone.utc) + timedelta(hours=2)
+    server._job_store.upsert(
+        {
+            "job_id": "job-active-1",
+            "status": "success",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "finished_at": "2026-01-01T00:01:00+00:00",
+            "output_json": str(output_json),
+            "output_gz": str(output_gz),
+            "output_gz_sha256": server._sha256_file(str(output_gz)),
+            "download_expires_ts": int(future_expires.timestamp()),
+            "download_expires_at": future_expires.isoformat(),
+        }
+    )
+
+    cleaned = server._cleanup_expired_download_artifacts()
+    assert cleaned == 0
+    assert output_json.exists()
+    assert output_gz.exists()

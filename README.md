@@ -131,4 +131,7 @@ openinflation-orchestrator \
 - `download_sha256` (контрольная сумма `.json.gz`)
 - `download_expires_at` (UTC, до какого момента URL валиден)
 
+После истечения `download_expires_at` оркестратор удаляет файлы `output_json/output_gz`
+и очищает download-поля у задачи, чтобы не накапливался файловый кэш.
+
 Результат задачи сохраняется файлами `<store_code>_<timestamp>.json` и `<store_code>_<timestamp>.json.gz` в `output_dir`.

@@ -136,13 +136,78 @@ class OrchestratorServer:
         )
         return hmac.compare_digest(expected, signature)
 
+    @staticmethod
+    def _safe_int(value: Any) -> int | None:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            if value.is_integer():
+                return int(value)
+            return None
+        if isinstance(value, str):
+            token = value.strip()
+            if not token:
+                return None
+            try:
+                return int(token)
+            except ValueError:
+                return None
+        return None
+
+    @staticmethod
+    def _iso_to_timestamp(value: Any) -> int | None:
+        if not isinstance(value, str):
+            return None
+        token = value.strip()
+        if not token:
+            return None
+        try:
+            parsed = datetime.fromisoformat(token)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return int(parsed.timestamp())
+
+    def _resolve_download_expires_ts(self, job_state: dict[str, Any]) -> int | None:
+        expires_ts = self._safe_int(job_state.get("download_expires_ts"))
+        if expires_ts is not None:
+            return expires_ts
+
+        expires_ts = self._iso_to_timestamp(job_state.get("download_expires_at"))
+        if expires_ts is not None:
+            return expires_ts
+
+        finished_ts = self._iso_to_timestamp(job_state.get("finished_at"))
+        if finished_ts is None:
+            return None
+        return finished_ts + self.download_url_ttl_sec
+
+    def _set_download_metadata(self, job_state: dict[str, Any]) -> None:
+        if str(job_state.get("status")) != "success":
+            return
+
+        checksum = str(job_state.get("output_gz_sha256", "")).strip()
+        if not checksum:
+            return
+
+        finished_ts = self._iso_to_timestamp(job_state.get("finished_at"))
+        base_ts = finished_ts if finished_ts is not None else int(time.time())
+        expires_ts = base_ts + self.download_url_ttl_sec
+        job_state["download_expires_ts"] = expires_ts
+        job_state["download_expires_at"] = datetime.fromtimestamp(
+            expires_ts, tz=timezone.utc
+        ).isoformat()
+
     def _build_download_url(
         self,
         *,
         job_id: str,
         checksum: str,
-    ) -> tuple[str, str]:
-        expires_ts = int(time.time()) + self.download_url_ttl_sec
+        expires_ts: int,
+    ) -> str:
         signature = self._download_signature(
             job_id=job_id,
             expires_ts=expires_ts,
@@ -156,11 +221,7 @@ class OrchestratorServer:
                 "sig": signature,
             }
         )
-        url = (
-            f"http://{self._download_public_host()}:{self.download_port}/download?{query}"
-        )
-        expires_at = datetime.fromtimestamp(expires_ts, tz=timezone.utc).isoformat()
-        return url, expires_at
+        return f"http://{self._download_public_host()}:{self.download_port}/download?{query}"
 
     def _job_download_data(self, job_state: dict[str, Any]) -> dict[str, Any] | None:
         if str(job_state.get("status")) != "success":
@@ -174,10 +235,18 @@ class OrchestratorServer:
         if not Path(output_gz).is_file():
             return None
 
-        download_url, expires_at = self._build_download_url(
+        expires_ts = self._resolve_download_expires_ts(job_state)
+        if expires_ts is None or expires_ts < int(time.time()):
+            return None
+
+        download_url = self._build_download_url(
             job_id=job_id,
             checksum=checksum,
+            expires_ts=expires_ts,
         )
+        expires_at = str(job_state.get("download_expires_at", "")).strip()
+        if not expires_at:
+            expires_at = datetime.fromtimestamp(expires_ts, tz=timezone.utc).isoformat()
         return {
             "download_url": download_url,
             "download_sha256": checksum,
@@ -186,6 +255,7 @@ class OrchestratorServer:
 
     def _present_job(self, job_state: dict[str, Any]) -> dict[str, Any]:
         payload = dict(job_state)
+        payload.pop("download_expires_ts", None)
         download_data = self._job_download_data(job_state)
         if download_data is not None:
             payload.update(download_data)
@@ -233,6 +303,10 @@ class OrchestratorServer:
             job_state = orchestrator._job_store.get(job_id)
             if not job_state or str(job_state.get("status")) != "success":
                 raise HTTPException(status_code=404, detail="Job result not found")
+
+            expected_expires = orchestrator._resolve_download_expires_ts(job_state)
+            if expected_expires is None or expected_expires != expires:
+                raise HTTPException(status_code=403, detail="Download token mismatch")
 
             output_gz = str(job_state.get("output_gz", "")).strip()
             stored_checksum = str(job_state.get("output_gz_sha256", "")).strip()
@@ -522,6 +596,8 @@ class OrchestratorServer:
                             "Failed to compute output_gz checksum for job %s",
                             job_id,
                         )
+                if job_state["status"] == "success":
+                    self._set_download_metadata(job_state)
                 self._job_store.upsert(job_state)
                 LOGGER.info(
                     "Job %s finished: status=%s worker=%s",
@@ -535,20 +611,96 @@ class OrchestratorServer:
 
             LOGGER.warning("Unknown result event for job %s: %s", job_id, event_name)
 
+    def _cleanup_expired_download_artifacts(self) -> int:
+        now_ts = int(time.time())
+        cleaned_jobs = 0
+
+        for job_state in self._job_store.values():
+            if str(job_state.get("status")) != "success":
+                continue
+
+            expires_ts = self._resolve_download_expires_ts(job_state)
+            if expires_ts is None or expires_ts > now_ts:
+                continue
+
+            job_id = str(job_state.get("job_id", "unknown"))
+            paths_to_delete: list[Path] = []
+            seen_paths: set[str] = set()
+            for key in ("output_json", "output_gz"):
+                raw_path = str(job_state.get(key, "")).strip()
+                if not raw_path or raw_path in seen_paths:
+                    continue
+                seen_paths.add(raw_path)
+                paths_to_delete.append(Path(raw_path))
+
+            deleted_files = 0
+            deletion_failed = False
+            for path in paths_to_delete:
+                if not path.exists():
+                    continue
+                if not path.is_file():
+                    LOGGER.warning(
+                        "Expired artifact path is not a file for job %s: %s",
+                        job_id,
+                        path,
+                    )
+                    deletion_failed = True
+                    continue
+                try:
+                    path.unlink()
+                    deleted_files += 1
+                except Exception:
+                    LOGGER.exception(
+                        "Failed to delete expired artifact for job %s: %s",
+                        job_id,
+                        path,
+                    )
+                    deletion_failed = True
+
+            if deletion_failed:
+                LOGGER.warning(
+                    "Will retry expired artifact cleanup for job %s on next heartbeat",
+                    job_id,
+                )
+                continue
+
+            for key in (
+                "output_json",
+                "output_gz",
+                "output_gz_sha256",
+                "download_url",
+                "download_sha256",
+                "download_expires_at",
+                "download_expires_ts",
+            ):
+                job_state.pop(key, None)
+            job_state["artifacts_deleted_at"] = utc_now_iso()
+            self._job_store.upsert(job_state)
+            cleaned_jobs += 1
+            LOGGER.info(
+                "Expired download artifacts cleaned: job=%s deleted_files=%s",
+                job_id,
+                deleted_files,
+            )
+
+        return cleaned_jobs
+
     async def _log_heartbeat(self) -> None:
         while not self._stop_event.is_set():
             await asyncio.sleep(15.0)
             reconciled = self._reconcile_orphaned_running_jobs()
             if reconciled > 0:
                 await self._try_dispatch_jobs()
+            cleaned = self._cleanup_expired_download_artifacts()
             pruned = self._job_store.prune()
             summary = self._job_store.summary()
             LOGGER.debug(
-                "Heartbeat: workers=%s jobs_total=%s jobs_by_status=%s reconciled=%s pruned=%s",
+                "Heartbeat: workers=%s jobs_total=%s jobs_by_status=%s reconciled=%s cleaned=%s pruned=%s",
                 len(self._workers),
                 summary["jobs_total"],
                 summary["jobs_by_status"],
                 reconciled,
+                cleaned,
                 pruned,
             )
 
