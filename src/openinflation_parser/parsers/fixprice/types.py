@@ -33,6 +33,7 @@ class FixPriceParserConfig:
     request_retry_backoff_sec: float = 1.5
     include_images: bool = False
     image_limit_per_product: int = 1
+    strict_validation: bool = False
 
 
 @dataclass(frozen=True, slots=True)

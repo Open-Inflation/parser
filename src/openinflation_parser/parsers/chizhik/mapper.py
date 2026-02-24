@@ -12,9 +12,25 @@ from openinflation_dataclass import (
     Schedule,
 )
 
+from ..model_builder import build_model
+
 
 class ChizhikMapper:
     """Mappers from Chizhik API contracts to openinflation dataclasses."""
+
+    @classmethod
+    def _build(
+        cls,
+        model_cls: Any,
+        payload: dict[str, Any],
+        *,
+        strict_validation: bool,
+    ) -> Any:
+        return build_model(
+            model_cls,
+            payload,
+            strict_validation=strict_validation,
+        )
 
     @staticmethod
     def _safe_str(value: Any) -> str | None:
@@ -47,8 +63,12 @@ class ChizhikMapper:
         return None
 
     @staticmethod
-    def _empty_schedule() -> Schedule:
-        return Schedule.model_construct(open_from=None, closed_from=None)
+    def _empty_schedule(*, strict_validation: bool) -> Schedule:
+        return build_model(
+            Schedule,
+            {"open_from": None, "closed_from": None},
+            strict_validation=strict_validation,
+        )
 
     @classmethod
     def _unit_from_raw(cls, value: Any) -> str | None:
@@ -90,44 +110,75 @@ class ChizhikMapper:
         return prepared or None
 
     @classmethod
-    def map_category_node(cls, node: dict[str, Any]) -> Category:
+    def map_category_node(
+        cls,
+        node: dict[str, Any],
+        *,
+        strict_validation: bool = False,
+    ) -> Category:
         raw_children = node.get("children")
         children: list[Category] = []
         if isinstance(raw_children, list):
             for child in raw_children:
                 if isinstance(child, dict):
-                    children.append(cls.map_category_node(child))
+                    children.append(
+                        cls.map_category_node(
+                            child,
+                            strict_validation=strict_validation,
+                        )
+                    )
 
-        return Category.model_construct(
-            uid=cls._id_to_str(node.get("id")),
-            alias=cls._safe_str(node.get("slug")),
-            title=cls._safe_str(node.get("name")),
-            adult=cls._safe_bool(node.get("is_adults")),
-            children=children,
+        return cls._build(
+            Category,
+            {
+                "uid": cls._id_to_str(node.get("id")),
+                "alias": cls._safe_str(node.get("slug")),
+                "title": cls._safe_str(node.get("name")),
+                "adult": cls._safe_bool(node.get("is_adults")),
+                "children": children,
+            },
+            strict_validation=strict_validation,
         )
 
     @classmethod
-    def map_city(cls, city: dict[str, Any]) -> AdministrativeUnit:
-        return AdministrativeUnit.model_construct(
-            settlement_type="city",
-            name=cls._safe_str(city.get("name")),
-            alias=cls._safe_str(city.get("slug")),
-            country=None,
-            region=None,
-            longitude=cls._safe_float(city.get("lon")),
-            latitude=cls._safe_float(city.get("lat")),
+    def map_city(
+        cls,
+        city: dict[str, Any],
+        *,
+        strict_validation: bool = False,
+    ) -> AdministrativeUnit:
+        return cls._build(
+            AdministrativeUnit,
+            {
+                "settlement_type": "city",
+                "name": cls._safe_str(city.get("name")),
+                "alias": cls._safe_str(city.get("slug")),
+                "country": None,
+                "region": None,
+                "longitude": cls._safe_float(city.get("lon")),
+                "latitude": cls._safe_float(city.get("lat")),
+            },
+            strict_validation=strict_validation,
         )
 
-    @staticmethod
-    def fallback_administrative_unit() -> AdministrativeUnit:
-        return AdministrativeUnit.model_construct(
-            settlement_type=None,
-            name=None,
-            alias=None,
-            country=None,
-            region=None,
-            longitude=None,
-            latitude=None,
+    @classmethod
+    def fallback_administrative_unit(
+        cls,
+        *,
+        strict_validation: bool = False,
+    ) -> AdministrativeUnit:
+        return cls._build(
+            AdministrativeUnit,
+            {
+                "settlement_type": None,
+                "name": None,
+                "alias": None,
+                "country": None,
+                "region": None,
+                "longitude": None,
+                "latitude": None,
+            },
+            strict_validation=strict_validation,
         )
 
     @classmethod
@@ -136,20 +187,31 @@ class ChizhikMapper:
         *,
         store_code: str | None,
         administrative_unit: AdministrativeUnit,
+        strict_validation: bool = False,
     ) -> RetailUnit:
-        return RetailUnit.model_construct(
-            retail_type=None,
-            code=cls._safe_str(store_code),
-            address=None,
-            schedule_weekdays=cls._empty_schedule(),
-            schedule_saturday=cls._empty_schedule(),
-            schedule_sunday=cls._empty_schedule(),
-            temporarily_closed=None,
-            longitude=administrative_unit.longitude,
-            latitude=administrative_unit.latitude,
-            administrative_unit=administrative_unit,
-            categories=None,
-            products=None,
+        return cls._build(
+            RetailUnit,
+            {
+                "retail_type": None,
+                "code": cls._safe_str(store_code),
+                "address": None,
+                "schedule_weekdays": cls._empty_schedule(
+                    strict_validation=strict_validation
+                ),
+                "schedule_saturday": cls._empty_schedule(
+                    strict_validation=strict_validation
+                ),
+                "schedule_sunday": cls._empty_schedule(
+                    strict_validation=strict_validation
+                ),
+                "temporarily_closed": None,
+                "longitude": administrative_unit.longitude,
+                "latitude": administrative_unit.latitude,
+                "administrative_unit": administrative_unit,
+                "categories": None,
+                "products": None,
+            },
+            strict_validation=strict_validation,
         )
 
     @classmethod
@@ -159,6 +221,7 @@ class ChizhikMapper:
         *,
         main_image: BytesIO | None = None,
         gallery_images: list[BytesIO] | None = None,
+        strict_validation: bool = False,
     ) -> Card:
         raw_meta = product.get("meta_data")
         metadata: list[MetaData] | None = None
@@ -177,10 +240,14 @@ class ChizhikMapper:
                 if not isinstance(value, (int, float, str)):
                     continue
                 prepared.append(
-                    MetaData.model_construct(
-                        name=name,
-                        alias=alias,
-                        value=value,
+                    cls._build(
+                        MetaData,
+                        {
+                            "name": name,
+                            "alias": alias,
+                            "value": value,
+                        },
+                        strict_validation=strict_validation,
                     )
                 )
             metadata = prepared or None
@@ -219,4 +286,8 @@ class ChizhikMapper:
         }
         if main_image is not None:
             payload["main_image"] = main_image
-        return Card.model_construct(**payload)
+        return cls._build(
+            Card,
+            payload,
+            strict_validation=strict_validation,
+        )

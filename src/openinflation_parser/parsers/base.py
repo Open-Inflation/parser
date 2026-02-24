@@ -61,7 +61,7 @@ class StoreParser(ABC):
         *,
         country_id: int | None = None,
         region_id: int | None = None,
-        city_id: int | None = None,
+        city_id: int | str | None = None,
         store_code: str | None = None,
     ) -> list[RetailUnit]:
         """Collect store information."""

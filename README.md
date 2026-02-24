@@ -6,6 +6,13 @@
 - `src/openinflation_parser/parsers/fixprice/`
 - `src/openinflation_parser/parsers/chizhik/`
 
+Структура оркестратора:
+- `src/openinflation_parser/orchestration/cli.py` (CLI и запуск)
+- `src/openinflation_parser/orchestration/server.py` (WS server и диспетчер)
+- `src/openinflation_parser/orchestration/worker.py` (worker runtime)
+- `src/openinflation_parser/orchestration/job_store.py` (история задач + sqlite)
+- `src/openinflation_parser/orchestration/requests.py` (pydantic-валидация WS payload)
+
 Парсеры имеют команды:
 1. Собрать каталог категорий
 2. Собрать товаров
@@ -23,6 +30,8 @@
   - выбор числа воркеров по ОЗУ и прокси;
   - пул **non-daemon** воркеров на `multiprocessing.Process`;
   - очередь задач + сбор статусов;
+  - pydantic-валидация входящих websocket-команд;
+  - lifecycle history задач (TTL + max history) с опциональной sqlite-персистентностью;
   - websocket-управление задачами.
 - `openinflation_parser.parsers.fixprice.FixPriceParser`:
   - работает на библиотеке `fixprice_api`;
@@ -63,6 +72,12 @@ python -m openinflation_parser.orchestrator \
 Важно: оркестратор в этом режиме только поднимает воркеры и ждёт задачи по WebSocket (`submit_store`).
 Чтобы запустить парсинг сразу при старте, передайте `--bootstrap-store-code <PFM>`.
 В режиме `--full-catalog` парсер обходит только leaf-категории (subcategories), а root-категория запрашивается только если у неё нет детей.
+
+Полезные флаги:
+- `--strict-validation` — включить строгую pydantic-валидацию mapped моделей (для CI/dev).
+- `--jobs-max-history` — лимит terminal jobs в памяти/БД.
+- `--jobs-retention-sec` — TTL terminal jobs.
+- `--jobs-db-path` — путь к sqlite с состоянием задач (`""` чтобы отключить).
 
 Пример для Чижика:
 ```bash

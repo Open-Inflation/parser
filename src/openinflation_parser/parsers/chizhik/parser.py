@@ -1,22 +1,20 @@
 from __future__ import annotations
 
-import asyncio
 import logging
-from io import BytesIO
-from typing import Any, Awaitable, Callable, TypeVar
+from typing import Any
 
 from openinflation_dataclass import AdministrativeUnit, Card, Category, RetailUnit
 
 from ..base import StoreParser
+from ..runtime import ParserRuntimeMixin
 from .mapper import ChizhikMapper
 from .types import CatalogProductsQuery, ChizhikParserConfig
 
 
 LOGGER = logging.getLogger(__name__)
-T = TypeVar("T")
 
 
-class ChizhikParser(StoreParser):
+class ChizhikParser(ParserRuntimeMixin, StoreParser):
     """Parser implementation based on chizhik_api."""
 
     def __init__(self, config: ChizhikParserConfig | None = None):
@@ -54,45 +52,6 @@ class ChizhikParser(StoreParser):
             raise RuntimeError("ChizhikParser must be used inside 'async with'.")
         return self._api
 
-    @staticmethod
-    def _is_timeout_error(exc: Exception) -> bool:
-        message = str(exc).lower()
-        return "timeout" in message or "fetch failed" in message
-
-    async def _with_retry(
-        self,
-        *,
-        operation: str,
-        call: Callable[[], Awaitable[T]],
-    ) -> T:
-        retries = max(0, self.config.request_retries)
-        attempt = 0
-        while True:
-            attempt += 1
-            try:
-                return await call()
-            except Exception as exc:
-                is_retryable = self._is_timeout_error(exc)
-                if (not is_retryable) or attempt > retries + 1:
-                    raise
-                delay = self.config.request_retry_backoff_sec * (2 ** (attempt - 1))
-                LOGGER.warning(
-                    "Retrying operation %s after error (%s/%s): %s. Sleep %.1fs",
-                    operation,
-                    attempt,
-                    retries + 1,
-                    exc,
-                    delay,
-                )
-                await asyncio.sleep(delay)
-
-    @staticmethod
-    def _safe_non_empty_str(value: Any) -> str | None:
-        if not isinstance(value, str):
-            return None
-        token = value.strip()
-        return token or None
-
     @classmethod
     def _category_id_from_uid(cls, uid: Any) -> int | None:
         if isinstance(uid, int) and not isinstance(uid, bool):
@@ -113,21 +72,6 @@ class ChizhikParser(StoreParser):
         for child in category.children:
             leaves.extend(ChizhikParser._iter_leaf_categories(child))
         return leaves
-
-    @classmethod
-    def _merge_categories_uid(cls, *groups: list[str] | None) -> list[str] | None:
-        prepared: list[str] = []
-        seen: set[str] = set()
-        for group in groups:
-            if not isinstance(group, list):
-                continue
-            for item in group:
-                token = cls._safe_non_empty_str(item)
-                if token is None or token in seen:
-                    continue
-                seen.add(token)
-                prepared.append(token)
-        return prepared or None
 
     @staticmethod
     def _card_key(card: Card) -> str | None:
@@ -188,48 +132,6 @@ class ChizhikParser(StoreParser):
             deduplicated.append(query)
         return deduplicated
 
-    async def _download_image(self, url: str) -> BytesIO | None:
-        api = self._require_api()
-        if not self.config.include_images:
-            return None
-        try:
-            stream = await api.General.download_image(url=url)
-        except Exception:
-            LOGGER.exception("Image download failed: %s", url)
-            return None
-        return BytesIO(stream.getvalue())
-
-    async def _collect_product_images(
-        self,
-        product: dict[str, Any],
-    ) -> tuple[BytesIO | None, list[BytesIO] | None]:
-        if not self.config.include_images:
-            return None, None
-
-        image_nodes = product.get("images")
-        if not isinstance(image_nodes, list):
-            return None, None
-
-        urls: list[str] = []
-        for node in image_nodes:
-            if not isinstance(node, dict):
-                continue
-            url = self._safe_non_empty_str(node.get("image"))
-            if url is not None:
-                urls.append(url)
-        if not urls:
-            return None, None
-
-        main = await self._download_image(urls[0])
-        gallery: list[BytesIO] = []
-
-        limit = max(0, self.config.image_limit_per_product)
-        for url in urls[1 : 1 + limit]:
-            image = await self._download_image(url)
-            if image is not None:
-                gallery.append(image)
-        return main, (gallery or None)
-
     async def _collect_products_page(
         self,
         *,
@@ -265,12 +167,20 @@ class ChizhikParser(StoreParser):
         for item in items:
             if not isinstance(item, dict):
                 continue
-            main_image, gallery_images = await self._collect_product_images(item)
+            main_image, gallery_images = await self._collect_product_images(
+                api=api,
+                product=item,
+                include_images=self.config.include_images,
+                images_field="images",
+                image_url_field="image",
+                image_limit=self.config.image_limit_per_product,
+            )
             cards.append(
                 ChizhikMapper.map_product(
                     item,
                     main_image=main_image,
                     gallery_images=gallery_images,
+                    strict_validation=self.config.strict_validation,
                 )
             )
 
@@ -362,7 +272,12 @@ class ChizhikParser(StoreParser):
         categories: list[Category] = []
         for node in raw_tree:
             if isinstance(node, dict):
-                categories.append(ChizhikMapper.map_category_node(node))
+                categories.append(
+                    ChizhikMapper.map_category_node(
+                        node,
+                        strict_validation=self.config.strict_validation,
+                    )
+                )
 
         LOGGER.info("Collected categories: %s", len(categories))
         return categories
@@ -417,7 +332,10 @@ class ChizhikParser(StoreParser):
             for item in items:
                 if not isinstance(item, dict):
                     continue
-                city = ChizhikMapper.map_city(item)
+                city = ChizhikMapper.map_city(
+                    item,
+                    strict_validation=self.config.strict_validation,
+                )
                 key = city.alias or city.name
                 if key is None:
                     continue
@@ -466,14 +384,17 @@ class ChizhikParser(StoreParser):
             selected = items[0]
         if selected is None:
             return None
-        return ChizhikMapper.map_city(selected)
+        return ChizhikMapper.map_city(
+            selected,
+            strict_validation=self.config.strict_validation,
+        )
 
     async def collect_store_info(
         self,
         *,
         country_id: int | None = None,
         region_id: int | None = None,
-        city_id: int | None = None,
+        city_id: int | str | None = None,
         store_code: str | None = None,
     ) -> list[RetailUnit]:
         del country_id
@@ -483,7 +404,9 @@ class ChizhikParser(StoreParser):
         if store_code is None:
             return []
 
-        administrative_unit = ChizhikMapper.fallback_administrative_unit()
+        administrative_unit = ChizhikMapper.fallback_administrative_unit(
+            strict_validation=self.config.strict_validation
+        )
         try:
             matched = await self._city_for_store_code(store_code)
             if matched is not None:
@@ -495,5 +418,6 @@ class ChizhikParser(StoreParser):
             ChizhikMapper.map_virtual_store(
                 store_code=store_code,
                 administrative_unit=administrative_unit,
+                strict_validation=self.config.strict_validation,
             )
         ]

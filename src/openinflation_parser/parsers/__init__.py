@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .adapters import ParserRunSettings, get_parser_adapter
 from .base import StoreParser
 from .chizhik import ChizhikParser, ChizhikParserConfig
 from .fixprice import FixPriceParser, FixPriceParserConfig
@@ -23,6 +24,8 @@ __all__ = [
     "ChizhikParserConfig",
     "FixPriceParser",
     "FixPriceParserConfig",
+    "ParserRunSettings",
     "StoreParser",
+    "get_parser_adapter",
     "get_parser",
 ]

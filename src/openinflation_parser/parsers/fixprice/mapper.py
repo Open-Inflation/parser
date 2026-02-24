@@ -13,6 +13,7 @@ from openinflation_dataclass import (
     Schedule,
 )
 
+from ..model_builder import build_model
 from .types import CountryCode, CurrencyCode, ProducerCountryCode
 
 
@@ -62,6 +63,20 @@ class FixPriceMapper:
         "деревня",
         "village",
     }
+
+    @classmethod
+    def _build(
+        cls,
+        model_cls: Any,
+        payload: dict[str, Any],
+        *,
+        strict_validation: bool,
+    ) -> Any:
+        return build_model(
+            model_cls,
+            payload,
+            strict_validation=strict_validation,
+        )
 
     @classmethod
     def country_code_from_id(cls, country_id: int | None) -> CountryCode | None:
@@ -138,15 +153,41 @@ class FixPriceMapper:
         return None
 
     @classmethod
-    def _schedule_from_raw(cls, value: Any) -> Schedule:
+    def _schedule_from_raw(
+        cls,
+        value: Any,
+        *,
+        strict_validation: bool,
+    ) -> Schedule:
+        payload: dict[str, Any]
         if not isinstance(value, str) or "-" not in value:
-            return Schedule.model_construct(open_from=None, closed_from=None)
+            payload = {"open_from": None, "closed_from": None}
+            return cls._build(
+                Schedule,
+                payload,
+                strict_validation=strict_validation,
+            )
         opened, closed = [part.strip() for part in value.split("-", 1)]
         if not cls.HHMM_PATTERN.fullmatch(opened):
-            return Schedule.model_construct(open_from=None, closed_from=None)
+            payload = {"open_from": None, "closed_from": None}
+            return cls._build(
+                Schedule,
+                payload,
+                strict_validation=strict_validation,
+            )
         if not cls.HHMM_PATTERN.fullmatch(closed):
-            return Schedule.model_construct(open_from=None, closed_from=None)
-        return Schedule.model_construct(open_from=opened, closed_from=closed)
+            payload = {"open_from": None, "closed_from": None}
+            return cls._build(
+                Schedule,
+                payload,
+                strict_validation=strict_validation,
+            )
+        payload = {"open_from": opened, "closed_from": closed}
+        return cls._build(
+            Schedule,
+            payload,
+            strict_validation=strict_validation,
+        )
 
     @classmethod
     def _unit_from_raw(cls, value: Any) -> Literal["PCE", "KGM", "LTR"] | None:
@@ -164,7 +205,12 @@ class FixPriceMapper:
         return None
 
     @classmethod
-    def map_category_node(cls, node: dict[str, Any]) -> Category:
+    def map_category_node(
+        cls,
+        node: dict[str, Any],
+        *,
+        strict_validation: bool = False,
+    ) -> Category:
         uid = cls._id_to_str(node.get("id"))
         alias = cls._safe_str(node.get("alias"))
         title = cls._safe_str(node.get("title"))
@@ -180,18 +226,33 @@ class FixPriceMapper:
         children: list[Category] = []
         for child in child_nodes:
             if isinstance(child, dict):
-                children.append(cls.map_category_node(child))
+                children.append(
+                    cls.map_category_node(
+                        child,
+                        strict_validation=strict_validation,
+                    )
+                )
 
-        return Category.model_construct(
-            uid=uid,
-            alias=alias,
-            title=title,
-            adult=cls._safe_bool(node.get("adult")),
-            children=children,
+        return cls._build(
+            Category,
+            {
+                "uid": uid,
+                "alias": alias,
+                "title": title,
+                "adult": cls._safe_bool(node.get("adult")),
+                "children": children,
+            },
+            strict_validation=strict_validation,
         )
 
     @classmethod
-    def map_city(cls, city: dict[str, Any], *, country_id: int | None = None) -> AdministrativeUnit:
+    def map_city(
+        cls,
+        city: dict[str, Any],
+        *,
+        country_id: int | None = None,
+        strict_validation: bool = False,
+    ) -> AdministrativeUnit:
         effective_country_id = cls._safe_int(city.get("countryId"))
         if effective_country_id is None:
             effective_country_id = country_id
@@ -201,14 +262,18 @@ class FixPriceMapper:
         if city_name is None:
             city_name = cls._safe_str(city.get("name"))
 
-        return AdministrativeUnit.model_construct(
-            settlement_type=cls._settlement_type(city.get("prefix")),
-            name=city_name,
-            alias=cls._safe_str(city.get("alias")),
-            country=country,
-            region=cls._safe_str(city.get("regionTitle")),
-            longitude=cls._safe_float(city.get("longitude")),
-            latitude=cls._safe_float(city.get("latitude")),
+        return cls._build(
+            AdministrativeUnit,
+            {
+                "settlement_type": cls._settlement_type(city.get("prefix")),
+                "name": city_name,
+                "alias": cls._safe_str(city.get("alias")),
+                "country": country,
+                "region": cls._safe_str(city.get("regionTitle")),
+                "longitude": cls._safe_float(city.get("longitude")),
+                "latitude": cls._safe_float(city.get("latitude")),
+            },
+            strict_validation=strict_validation,
         )
 
     @classmethod
@@ -217,17 +282,22 @@ class FixPriceMapper:
         *,
         country_id: int | None,
         city_id: int | None,
+        strict_validation: bool = False,
     ) -> AdministrativeUnit:
         del country_id
         del city_id
-        return AdministrativeUnit.model_construct(
-            settlement_type=None,
-            name=None,
-            alias=None,
-            country=None,
-            region=None,
-            longitude=None,
-            latitude=None,
+        return cls._build(
+            AdministrativeUnit,
+            {
+                "settlement_type": None,
+                "name": None,
+                "alias": None,
+                "country": None,
+                "region": None,
+                "longitude": None,
+                "latitude": None,
+            },
+            strict_validation=strict_validation,
         )
 
     @classmethod
@@ -236,6 +306,7 @@ class FixPriceMapper:
         store: dict[str, Any],
         *,
         administrative_unit: AdministrativeUnit,
+        strict_validation: bool = False,
     ) -> RetailUnit:
         warehouse = cls._safe_bool(store.get("warehouse"))
         if warehouse is True:
@@ -245,19 +316,32 @@ class FixPriceMapper:
         else:
             retail_type = None
 
-        return RetailUnit.model_construct(
-            retail_type=retail_type,
-            code=cls._safe_str(store.get("pfm")),
-            address=cls._safe_str(store.get("address")),
-            schedule_weekdays=cls._schedule_from_raw(store.get("scheduleWeekdays")),
-            schedule_saturday=cls._schedule_from_raw(store.get("scheduleSaturday")),
-            schedule_sunday=cls._schedule_from_raw(store.get("scheduleSunday")),
-            temporarily_closed=cls._safe_bool(store.get("temporarilyClosed")),
-            longitude=cls._safe_float(store.get("longitude")),
-            latitude=cls._safe_float(store.get("latitude")),
-            administrative_unit=administrative_unit,
-            categories=None,
-            products=None,
+        return cls._build(
+            RetailUnit,
+            {
+                "retail_type": retail_type,
+                "code": cls._safe_str(store.get("pfm")),
+                "address": cls._safe_str(store.get("address")),
+                "schedule_weekdays": cls._schedule_from_raw(
+                    store.get("scheduleWeekdays"),
+                    strict_validation=strict_validation,
+                ),
+                "schedule_saturday": cls._schedule_from_raw(
+                    store.get("scheduleSaturday"),
+                    strict_validation=strict_validation,
+                ),
+                "schedule_sunday": cls._schedule_from_raw(
+                    store.get("scheduleSunday"),
+                    strict_validation=strict_validation,
+                ),
+                "temporarily_closed": cls._safe_bool(store.get("temporarilyClosed")),
+                "longitude": cls._safe_float(store.get("longitude")),
+                "latitude": cls._safe_float(store.get("latitude")),
+                "administrative_unit": administrative_unit,
+                "categories": None,
+                "products": None,
+            },
+            strict_validation=strict_validation,
         )
 
     @classmethod
@@ -267,6 +351,7 @@ class FixPriceMapper:
         *,
         main_image: BytesIO | None = None,
         gallery_images: list[BytesIO] | None = None,
+        strict_validation: bool = False,
     ) -> Card:
         sku = cls._safe_str(product.get("sku"))
         category = product.get("category") if isinstance(product.get("category"), dict) else {}
@@ -299,7 +384,11 @@ class FixPriceMapper:
                 if not isinstance(value, (int, float, str)):
                     continue
                 prepared_meta.append(
-                    MetaData.model_construct(name=name, alias=alias, value=value)
+                    cls._build(
+                        MetaData,
+                        {"name": name, "alias": alias, "value": value},
+                        strict_validation=strict_validation,
+                    )
                 )
             metadata = prepared_meta or None
 
@@ -342,4 +431,8 @@ class FixPriceMapper:
         }
         if main_image is not None:
             card_payload["main_image"] = main_image
-        return Card.model_construct(**card_payload)
+        return cls._build(
+            Card,
+            card_payload,
+            strict_validation=strict_validation,
+        )

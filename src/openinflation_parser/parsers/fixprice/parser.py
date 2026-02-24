@@ -1,22 +1,20 @@
 from __future__ import annotations
 
-import asyncio
 import logging
-from io import BytesIO
-from typing import Any, Awaitable, Callable, TypeVar
+from typing import Any
 
 from openinflation_dataclass import AdministrativeUnit, Card, Category, RetailUnit
 
 from ..base import StoreParser
+from ..runtime import ParserRuntimeMixin
 from .mapper import FixPriceMapper
 from .types import CatalogProductsQuery, FixPriceParserConfig
 
 
 LOGGER = logging.getLogger(__name__)
-T = TypeVar("T")
 
 
-class FixPriceParser(StoreParser):
+class FixPriceParser(ParserRuntimeMixin, StoreParser):
     """First parser implementation based on fixprice_api."""
 
     def __init__(self, config: FixPriceParserConfig | None = None):
@@ -58,62 +56,6 @@ class FixPriceParser(StoreParser):
             raise RuntimeError("FixPriceParser must be used inside 'async with'.")
         return self._api
 
-    @staticmethod
-    def _is_timeout_error(exc: Exception) -> bool:
-        message = str(exc).lower()
-        return "timeout" in message or "fetch failed" in message
-
-    async def _with_retry(
-        self,
-        *,
-        operation: str,
-        call: Callable[[], Awaitable[T]],
-    ) -> T:
-        retries = max(0, self.config.request_retries)
-        attempt = 0
-        while True:
-            attempt += 1
-            try:
-                return await call()
-            except Exception as exc:
-                is_retryable = self._is_timeout_error(exc)
-                if (not is_retryable) or attempt > retries + 1:
-                    raise
-                delay = self.config.request_retry_backoff_sec * (2 ** (attempt - 1))
-                LOGGER.warning(
-                    "Retrying operation %s after error (%s/%s): %s. Sleep %.1fs",
-                    operation,
-                    attempt,
-                    retries + 1,
-                    exc,
-                    delay,
-                )
-                await asyncio.sleep(delay)
-
-    @staticmethod
-    def _non_empty_str(value: Any) -> str | None:
-        if not isinstance(value, str):
-            return None
-        token = value.strip()
-        if not token:
-            return None
-        return token
-
-    @classmethod
-    def _merge_categories_uid(cls, *groups: list[str] | None) -> list[str] | None:
-        merged: list[str] = []
-        seen: set[str] = set()
-        for group in groups:
-            if not isinstance(group, list):
-                continue
-            for item in group:
-                token = cls._non_empty_str(item)
-                if token is None or token in seen:
-                    continue
-                seen.add(token)
-                merged.append(token)
-        return merged or None
-
     @classmethod
     def _query_categories_uid(cls, query: CatalogProductsQuery) -> list[str] | None:
         category_uid = [query.category_uid] if query.category_uid is not None else None
@@ -136,27 +78,27 @@ class FixPriceParser(StoreParser):
             selected = categories[: max(1, category_limit)]
             queries: list[CatalogProductsQuery] = []
             for category in selected:
-                category_alias = self._non_empty_str(category.alias)
+                category_alias = self._safe_non_empty_str(category.alias)
                 if category_alias is None:
                     continue
                 queries.append(
                     CatalogProductsQuery(
                         category_alias=category_alias,
-                        category_uid=self._non_empty_str(category.uid),
+                        category_uid=self._safe_non_empty_str(category.uid),
                     )
                 )
             return queries
 
         queries: list[CatalogProductsQuery] = []
         for category in categories:
-            category_alias = self._non_empty_str(category.alias)
+            category_alias = self._safe_non_empty_str(category.alias)
             if category_alias is None:
                 continue
-            category_uid = self._non_empty_str(category.uid)
+            category_uid = self._safe_non_empty_str(category.uid)
 
             subqueries: list[CatalogProductsQuery] = []
             for child in category.children:
-                child_alias = self._non_empty_str(child.alias)
+                child_alias = self._safe_non_empty_str(child.alias)
                 if child_alias is None:
                     continue
                 subqueries.append(
@@ -164,7 +106,7 @@ class FixPriceParser(StoreParser):
                         category_alias=category_alias,
                         subcategory_alias=child_alias,
                         category_uid=category_uid,
-                        subcategory_uid=self._non_empty_str(child.uid),
+                        subcategory_uid=self._safe_non_empty_str(child.uid),
                     )
                 )
             if subqueries:
@@ -263,51 +205,14 @@ class FixPriceParser(StoreParser):
 
         for node in raw_tree.values():
             if isinstance(node, dict):
-                categories.append(FixPriceMapper.map_category_node(node))
+                categories.append(
+                    FixPriceMapper.map_category_node(
+                        node,
+                        strict_validation=self.config.strict_validation,
+                    )
+                )
         LOGGER.info("Collected categories: %s", len(categories))
         return categories
-
-    async def _download_image(self, url: str) -> BytesIO | None:
-        api = self._require_api()
-        if not self.config.include_images:
-            return None
-        try:
-            stream = await api.General.download_image(url=url)
-        except Exception:
-            LOGGER.exception("Image download failed: %s", url)
-            return None
-        return BytesIO(stream.getvalue())
-
-    async def _collect_product_images(
-        self,
-        product: dict[str, Any],
-    ) -> tuple[BytesIO | None, list[BytesIO] | None]:
-        if not self.config.include_images:
-            return None, None
-
-        image_nodes = product.get("images")
-        if not isinstance(image_nodes, list):
-            return None, None
-
-        urls: list[str] = []
-        for image_node in image_nodes:
-            if not isinstance(image_node, dict):
-                continue
-            src = image_node.get("src")
-            if isinstance(src, str) and src:
-                urls.append(src)
-        if not urls:
-            return None, None
-
-        main = await self._download_image(urls[0])
-        gallery: list[BytesIO] = []
-
-        limit = max(0, self.config.image_limit_per_product)
-        for url in urls[1 : 1 + limit]:
-            image = await self._download_image(url)
-            if image is not None:
-                gallery.append(image)
-        return main, (gallery or None)
 
     async def collect_products(
         self,
@@ -343,12 +248,20 @@ class FixPriceParser(StoreParser):
         for raw_product in raw_products:
             if not isinstance(raw_product, dict):
                 continue
-            main_image, gallery_images = await self._collect_product_images(raw_product)
+            main_image, gallery_images = await self._collect_product_images(
+                api=api,
+                product=raw_product,
+                include_images=self.config.include_images,
+                images_field="images",
+                image_url_field="src",
+                image_limit=self.config.image_limit_per_product,
+            )
             cards.append(
                 FixPriceMapper.map_product(
                     raw_product,
                     main_image=main_image,
                     gallery_images=gallery_images,
+                    strict_validation=self.config.strict_validation,
                 )
             )
         LOGGER.info(
@@ -387,6 +300,7 @@ class FixPriceParser(StoreParser):
             city_map[city_id] = FixPriceMapper.map_city(
                 raw_city,
                 country_id=target_country_id,
+                strict_validation=self.config.strict_validation,
             )
 
         self._city_cache_by_country[target_country_id] = city_map
@@ -410,7 +324,11 @@ class FixPriceParser(StoreParser):
             )
             city = response.json()
             if isinstance(city, dict):
-                cached[city_id] = FixPriceMapper.map_city(city, country_id=country_id)
+                cached[city_id] = FixPriceMapper.map_city(
+                    city,
+                    country_id=country_id,
+                    strict_validation=self.config.strict_validation,
+                )
                 self._city_cache_by_country[country_id] = cached
         return cached
 
@@ -419,32 +337,47 @@ class FixPriceParser(StoreParser):
         *,
         country_id: int | None = None,
         region_id: int | None = None,
-        city_id: int | None = None,
+        city_id: int | str | None = None,
         store_code: str | None = None,
     ) -> list[RetailUnit]:
         api = self._require_api()
         target_country_id = country_id or self.config.country_id
+        target_city_id: int | None
+        if isinstance(city_id, int):
+            target_city_id = city_id
+        elif isinstance(city_id, str):
+            try:
+                target_city_id = int(city_id)
+            except ValueError:
+                target_city_id = None
+        else:
+            target_city_id = None
 
         LOGGER.info(
             "Collecting stores: country_id=%s region_id=%s city_id=%s store_code=%s",
             target_country_id,
             region_id,
-            city_id,
+            target_city_id,
             store_code,
         )
         response = await self._with_retry(
-            operation=f"geolocation.shop.search[{target_country_id}:{region_id}:{city_id}]",
+            operation=(
+                f"geolocation.shop.search[{target_country_id}:{region_id}:{target_city_id}]"
+            ),
             call=lambda: api.Geolocation.Shop.search(
                 country_id=target_country_id,
                 region_id=region_id,
-                city_id=city_id,
+                city_id=target_city_id,
             ),
         )
         raw_shops = response.json()
         if not isinstance(raw_shops, list):
             return []
 
-        city_map = await self._get_city_map(country_id=target_country_id, city_id=city_id)
+        city_map = await self._get_city_map(
+            country_id=target_country_id,
+            city_id=target_city_id,
+        )
         code_filter = str(store_code).lower() if store_code is not None else None
 
         stores: list[RetailUnit] = []
@@ -461,12 +394,14 @@ class FixPriceParser(StoreParser):
                 administrative_unit = FixPriceMapper.fallback_administrative_unit(
                     country_id=target_country_id,
                     city_id=mapped_city_id,
+                    strict_validation=self.config.strict_validation,
                 )
 
             stores.append(
                 FixPriceMapper.map_store(
                     raw_shop,
                     administrative_unit=administrative_unit,
+                    strict_validation=self.config.strict_validation,
                 )
             )
         LOGGER.info("Collected stores: matched=%s", len(stores))

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from openinflation_parser.orchestrator import choose_worker_count, load_proxy_list
-from openinflation_parser.parsers import get_parser
+from openinflation_parser.parsers import get_parser, get_parser_adapter
 
 
 def test_choose_worker_count_ram_only() -> None:
@@ -107,3 +107,8 @@ def test_worker_job_accepts_string_city_id() -> None:
 def test_parser_registry_includes_chizhik() -> None:
     parser_cls = get_parser("chizhik")
     assert parser_cls.__name__ == "ChizhikParser"
+
+
+def test_parser_adapter_registry_includes_fixprice() -> None:
+    adapter = get_parser_adapter("fixprice")
+    assert adapter.name == "fixprice"
