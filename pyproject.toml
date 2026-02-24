@@ -18,6 +18,9 @@ dependencies = [
 fixprice = [
     "fixprice-api>=0.2.2",
 ]
+chizhik = [
+    "chizhik_api>=0.2.4",
+]
 dev = [
     "pytest>=8.0.0",
 ]

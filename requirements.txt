@@ -1,4 +1,5 @@
 websockets>=12.0,<16.0
 openinflation-dataclass>=0.1.0
 fixprice-api>=0.2.2
+chizhik_api>=0.2.4
 pytest>=8.0.0

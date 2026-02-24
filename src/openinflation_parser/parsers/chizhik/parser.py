@@ -1,0 +1,499 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+from io import BytesIO
+from typing import Any, Awaitable, Callable, TypeVar
+
+from openinflation_dataclass import AdministrativeUnit, Card, Category, RetailUnit
+
+from ..base import StoreParser
+from .mapper import ChizhikMapper
+from .types import CatalogProductsQuery, ChizhikParserConfig
+
+
+LOGGER = logging.getLogger(__name__)
+T = TypeVar("T")
+
+
+class ChizhikParser(StoreParser):
+    """Parser implementation based on chizhik_api."""
+
+    def __init__(self, config: ChizhikParserConfig | None = None):
+        self.config = config or ChizhikParserConfig()
+        self._api: Any = None
+        self._city_cache: dict[str, AdministrativeUnit] = {}
+
+    async def __aenter__(self) -> "ChizhikParser":
+        from chizhik_api import ChizhikAPI
+
+        LOGGER.info(
+            "Initializing Chizhik API client: city_id=%s include_images=%s timeout_ms=%s retries=%s",
+            self.config.city_id,
+            self.config.include_images,
+            self.config.timeout_ms,
+            self.config.request_retries,
+        )
+        self._api = ChizhikAPI(
+            headless=self.config.headless,
+            proxy=self.config.proxy,
+            timeout_ms=self.config.timeout_ms,
+        )
+        await self._api.__aenter__()
+        LOGGER.info("Chizhik API session warmed up")
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        if self._api is not None:
+            await self._api.__aexit__(*exc_info)
+            self._api = None
+        LOGGER.info("Chizhik API session closed")
+
+    def _require_api(self) -> Any:
+        if self._api is None:
+            raise RuntimeError("ChizhikParser must be used inside 'async with'.")
+        return self._api
+
+    @staticmethod
+    def _is_timeout_error(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return "timeout" in message or "fetch failed" in message
+
+    async def _with_retry(
+        self,
+        *,
+        operation: str,
+        call: Callable[[], Awaitable[T]],
+    ) -> T:
+        retries = max(0, self.config.request_retries)
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                return await call()
+            except Exception as exc:
+                is_retryable = self._is_timeout_error(exc)
+                if (not is_retryable) or attempt > retries + 1:
+                    raise
+                delay = self.config.request_retry_backoff_sec * (2 ** (attempt - 1))
+                LOGGER.warning(
+                    "Retrying operation %s after error (%s/%s): %s. Sleep %.1fs",
+                    operation,
+                    attempt,
+                    retries + 1,
+                    exc,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+
+    @staticmethod
+    def _safe_non_empty_str(value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+        token = value.strip()
+        return token or None
+
+    @classmethod
+    def _category_id_from_uid(cls, uid: Any) -> int | None:
+        if isinstance(uid, int) and not isinstance(uid, bool):
+            return uid
+        token = cls._safe_non_empty_str(uid)
+        if token is None:
+            return None
+        try:
+            return int(token)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _iter_leaf_categories(category: Category) -> list[Category]:
+        if not category.children:
+            return [category]
+        leaves: list[Category] = []
+        for child in category.children:
+            leaves.extend(ChizhikParser._iter_leaf_categories(child))
+        return leaves
+
+    @classmethod
+    def _merge_categories_uid(cls, *groups: list[str] | None) -> list[str] | None:
+        prepared: list[str] = []
+        seen: set[str] = set()
+        for group in groups:
+            if not isinstance(group, list):
+                continue
+            for item in group:
+                token = cls._safe_non_empty_str(item)
+                if token is None or token in seen:
+                    continue
+                seen.add(token)
+                prepared.append(token)
+        return prepared or None
+
+    @staticmethod
+    def _card_key(card: Card) -> str | None:
+        if card.sku is not None:
+            return card.sku
+        return card.plu
+
+    def build_catalog_queries(
+        self,
+        categories: list[Category],
+        *,
+        full_catalog: bool,
+        category_limit: int,
+    ) -> list[CatalogProductsQuery]:
+        if not categories:
+            return []
+
+        queries: list[CatalogProductsQuery] = []
+        if not full_catalog:
+            selected = categories[: max(1, category_limit)]
+            for category in selected:
+                category_uid = self._safe_non_empty_str(category.uid)
+                category_id = self._category_id_from_uid(category_uid)
+                if category_id is None:
+                    continue
+                queries.append(
+                    CatalogProductsQuery(
+                        category_id=category_id,
+                        category_uid=category_uid,
+                        category_slug=self._safe_non_empty_str(category.alias),
+                    )
+                )
+            return queries
+
+        for category in categories:
+            leaves = self._iter_leaf_categories(category)
+            if not leaves:
+                leaves = [category]
+            for leaf in leaves:
+                category_uid = self._safe_non_empty_str(leaf.uid)
+                category_id = self._category_id_from_uid(category_uid)
+                if category_id is None:
+                    continue
+                queries.append(
+                    CatalogProductsQuery(
+                        category_id=category_id,
+                        category_uid=category_uid,
+                        category_slug=self._safe_non_empty_str(leaf.alias),
+                    )
+                )
+
+        deduplicated: list[CatalogProductsQuery] = []
+        seen: set[int] = set()
+        for query in queries:
+            if query.category_id in seen:
+                continue
+            seen.add(query.category_id)
+            deduplicated.append(query)
+        return deduplicated
+
+    async def _download_image(self, url: str) -> BytesIO | None:
+        api = self._require_api()
+        if not self.config.include_images:
+            return None
+        try:
+            stream = await api.General.download_image(url=url)
+        except Exception:
+            LOGGER.exception("Image download failed: %s", url)
+            return None
+        return BytesIO(stream.getvalue())
+
+    async def _collect_product_images(
+        self,
+        product: dict[str, Any],
+    ) -> tuple[BytesIO | None, list[BytesIO] | None]:
+        if not self.config.include_images:
+            return None, None
+
+        image_nodes = product.get("images")
+        if not isinstance(image_nodes, list):
+            return None, None
+
+        urls: list[str] = []
+        for node in image_nodes:
+            if not isinstance(node, dict):
+                continue
+            url = self._safe_non_empty_str(node.get("image"))
+            if url is not None:
+                urls.append(url)
+        if not urls:
+            return None, None
+
+        main = await self._download_image(urls[0])
+        gallery: list[BytesIO] = []
+
+        limit = max(0, self.config.image_limit_per_product)
+        for url in urls[1 : 1 + limit]:
+            image = await self._download_image(url)
+            if image is not None:
+                gallery.append(image)
+        return main, (gallery or None)
+
+    async def _collect_products_page(
+        self,
+        *,
+        query: CatalogProductsQuery,
+        page: int,
+    ) -> tuple[list[Card], int | None]:
+        api = self._require_api()
+        LOGGER.info(
+            "Collecting products: category_id=%s slug=%s page=%s",
+            query.category_id,
+            query.category_slug,
+            page,
+        )
+        response = await self._with_retry(
+            operation=f"catalog.products_list[{query.category_id}:{page}]",
+            call=lambda: api.Catalog.products_list(
+                page=page,
+                category_id=query.category_id,
+                city_id=self.config.city_id,
+            ),
+        )
+        payload = response.json()
+        if not isinstance(payload, dict):
+            return [], None
+
+        total_pages_raw = payload.get("total_pages")
+        total_pages = total_pages_raw if isinstance(total_pages_raw, int) else None
+        items = payload.get("items")
+        if not isinstance(items, list):
+            return [], total_pages
+
+        cards: list[Card] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            main_image, gallery_images = await self._collect_product_images(item)
+            cards.append(
+                ChizhikMapper.map_product(
+                    item,
+                    main_image=main_image,
+                    gallery_images=gallery_images,
+                )
+            )
+
+        LOGGER.info(
+            "Collected products page: category_id=%s slug=%s page=%s count=%s total_pages=%s",
+            query.category_id,
+            query.category_slug,
+            page,
+            len(cards),
+            total_pages,
+        )
+        return cards, total_pages
+
+    async def collect_products_for_queries(
+        self,
+        queries: list[CatalogProductsQuery],
+        *,
+        page_limit: int,
+        items_per_page: int = 100,
+    ) -> list[Card]:
+        del items_per_page  # Chizhik API uses fixed server page size.
+        safe_page_limit = max(1, page_limit)
+
+        all_products: list[Card] = []
+        key_to_index: dict[str, int] = {}
+
+        for query in queries:
+            query_categories_uid = (
+                [query.category_uid] if query.category_uid is not None else None
+            )
+            for page in range(1, safe_page_limit + 1):
+                page_products, total_pages = await self._collect_products_page(
+                    query=query,
+                    page=page,
+                )
+                if not page_products:
+                    break
+
+                for card in page_products:
+                    merged_categories_uid = self._merge_categories_uid(
+                        card.categories_uid,
+                        query_categories_uid,
+                    )
+                    enriched = card
+                    if merged_categories_uid != card.categories_uid:
+                        enriched = card.model_copy(
+                            update={"categories_uid": merged_categories_uid}
+                        )
+
+                    key = self._card_key(enriched)
+                    if key is not None and key in key_to_index:
+                        current_index = key_to_index[key]
+                        current_card = all_products[current_index]
+                        updated_categories_uid = self._merge_categories_uid(
+                            current_card.categories_uid,
+                            enriched.categories_uid,
+                        )
+                        if updated_categories_uid != current_card.categories_uid:
+                            all_products[current_index] = current_card.model_copy(
+                                update={"categories_uid": updated_categories_uid}
+                            )
+                        continue
+
+                    if key is not None:
+                        key_to_index[key] = len(all_products)
+                    all_products.append(enriched)
+
+                if total_pages is not None and page >= total_pages:
+                    break
+
+        LOGGER.info(
+            "Collected products for queries: queries=%s unique_products=%s",
+            len(queries),
+            len(all_products),
+        )
+        return all_products
+
+    async def collect_categories(self) -> list[Category]:
+        api = self._require_api()
+        LOGGER.info("Collecting Chizhik category tree")
+        response = await self._with_retry(
+            operation="catalog.tree",
+            call=lambda: api.Catalog.tree(city_id=self.config.city_id),
+        )
+        raw_tree = response.json()
+        if not isinstance(raw_tree, list):
+            return []
+
+        categories: list[Category] = []
+        for node in raw_tree:
+            if isinstance(node, dict):
+                categories.append(ChizhikMapper.map_category_node(node))
+
+        LOGGER.info("Collected categories: %s", len(categories))
+        return categories
+
+    async def collect_products(
+        self,
+        category_alias: str,
+        *,
+        subcategory_alias: str | None = None,
+        page: int = 1,
+        limit: int = 100,
+    ) -> list[Card]:
+        del subcategory_alias
+        del limit
+
+        category_id = self._category_id_from_uid(category_alias)
+        if category_id is None:
+            return []
+
+        products, _ = await self._collect_products_page(
+            query=CatalogProductsQuery(
+                category_id=category_id,
+                category_uid=str(category_id),
+                category_slug=None,
+            ),
+            page=max(1, page),
+        )
+        return products
+
+    async def collect_cities(self, *, country_id: int | None = None) -> list[AdministrativeUnit]:
+        del country_id
+        if self._city_cache:
+            return list(self._city_cache.values())
+
+        api = self._require_api()
+        search = self._safe_non_empty_str(self.config.city_search) or "а"
+        max_pages = max(1, self.config.max_city_pages)
+
+        for page in range(1, max_pages + 1):
+            LOGGER.info("Collecting cities: search=%s page=%s", search, page)
+            response = await self._with_retry(
+                operation=f"geolocation.cities_list[{search}:{page}]",
+                call=lambda: api.Geolocation.cities_list(search_name=search, page=page),
+            )
+            payload = response.json()
+            if not isinstance(payload, dict):
+                break
+            items = payload.get("items")
+            if not isinstance(items, list) or not items:
+                break
+
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                city = ChizhikMapper.map_city(item)
+                key = city.alias or city.name
+                if key is None:
+                    continue
+                self._city_cache[key] = city
+
+            total_pages_raw = payload.get("total_pages")
+            total_pages = total_pages_raw if isinstance(total_pages_raw, int) else None
+            if total_pages is not None and page >= total_pages:
+                break
+
+        return list(self._city_cache.values())
+
+    async def _city_for_store_code(self, store_code: str) -> AdministrativeUnit | None:
+        api = self._require_api()
+        response = await self._with_retry(
+            operation=f"geolocation.cities_list[{store_code}:1]",
+            call=lambda: api.Geolocation.cities_list(search_name=store_code, page=1),
+        )
+        payload = response.json()
+        if not isinstance(payload, dict):
+            return None
+        items = payload.get("items")
+        if not isinstance(items, list) or not items:
+            return None
+
+        normalized = store_code.strip().lower()
+        exact: dict[str, Any] | None = None
+        with_shop: dict[str, Any] | None = None
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            slug = self._safe_non_empty_str(item.get("slug"))
+            name = self._safe_non_empty_str(item.get("name"))
+            has_shop = item.get("has_shop") is True
+            if slug is not None and slug.lower() == normalized:
+                exact = item
+                break
+            if name is not None and name.lower() == normalized:
+                exact = item
+                break
+            if has_shop and with_shop is None:
+                with_shop = item
+
+        selected = exact or with_shop
+        if selected is None and isinstance(items[0], dict):
+            selected = items[0]
+        if selected is None:
+            return None
+        return ChizhikMapper.map_city(selected)
+
+    async def collect_store_info(
+        self,
+        *,
+        country_id: int | None = None,
+        region_id: int | None = None,
+        city_id: int | None = None,
+        store_code: str | None = None,
+    ) -> list[RetailUnit]:
+        del country_id
+        del region_id
+        del city_id
+
+        if store_code is None:
+            return []
+
+        administrative_unit = ChizhikMapper.fallback_administrative_unit()
+        try:
+            matched = await self._city_for_store_code(store_code)
+            if matched is not None:
+                administrative_unit = matched
+        except Exception:
+            LOGGER.exception("Failed to resolve city by store code: %s", store_code)
+
+        return [
+            ChizhikMapper.map_virtual_store(
+                store_code=store_code,
+                administrative_unit=administrative_unit,
+            )
+        ]

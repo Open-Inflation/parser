@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from openinflation_parser.orchestrator import choose_worker_count, load_proxy_list
+from openinflation_parser.parsers import get_parser
 
 
 def test_choose_worker_count_ram_only() -> None:
@@ -85,3 +86,24 @@ def test_worker_job_parses_retry_settings() -> None:
     assert job.api_timeout_ms == 120000.0
     assert job.request_retries == 5
     assert job.request_retry_backoff_sec == 2.5
+
+
+def test_worker_job_accepts_string_city_id() -> None:
+    from openinflation_parser.orchestrator import WorkerJob
+
+    job = WorkerJob.from_payload(
+        {
+            "job_id": "j2",
+            "parser_name": "chizhik",
+            "store_code": "moskva",
+            "output_dir": "./output",
+            "city_id": "fdc6b0ad-4096-43e7-a2e9-16404d2e1f68",
+        }
+    )
+
+    assert job.city_id == "fdc6b0ad-4096-43e7-a2e9-16404d2e1f68"
+
+
+def test_parser_registry_includes_chizhik() -> None:
+    parser_cls = get_parser("chizhik")
+    assert parser_cls.__name__ == "ChizhikParser"

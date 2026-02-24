@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from .fixprice_mapper import FixPriceMapper
-from .fixprice_parser import FixPriceParser
-from .fixprice_types import (
+from .mapper import FixPriceMapper
+from .parser import FixPriceParser
+from .types import (
     CatalogProductsQuery,
     CountryCode,
     CurrencyCode,

@@ -2,6 +2,10 @@
 
 Существует оркестрационный модуль и суб-модули парсеров.
 
+Структура парсеров:
+- `src/openinflation_parser/parsers/fixprice/`
+- `src/openinflation_parser/parsers/chizhik/`
+
 Парсеры имеют команды:
 1. Собрать каталог категорий
 2. Собрать товаров
@@ -21,7 +25,10 @@
   - очередь задач + сбор статусов;
   - websocket-управление задачами.
 - `openinflation_parser.parsers.fixprice.FixPriceParser`:
-  - работает на библиотеке `../fixprice_api`;
+  - работает на библиотеке `fixprice_api`;
+  - маппит API-контракты в `openinflation_dataclass` (`Category`, `Card`, `AdministrativeUnit`, `RetailUnit`).
+- `openinflation_parser.parsers.chizhik.ChizhikParser`:
+  - работает на библиотеке `chizhik_api`;
   - маппит API-контракты в `openinflation_dataclass` (`Category`, `Card`, `AdministrativeUnit`, `RetailUnit`).
 
 ## Установка
@@ -38,6 +45,7 @@ pip install -e .
 python -m openinflation_parser.orchestrator \
   --host 127.0.0.1 \
   --port 8765 \
+  --parser fixprice \
   --output-dir ./output \
   --country-id 2 \
   --full-catalog \
@@ -56,11 +64,25 @@ python -m openinflation_parser.orchestrator \
 Чтобы запустить парсинг сразу при старте, передайте `--bootstrap-store-code <PFM>`.
 В режиме `--full-catalog` парсер обходит только leaf-категории (subcategories), а root-категория запрашивается только если у неё нет детей.
 
+Пример для Чижика:
+```bash
+openinflation-orchestrator \
+  --parser chizhik \
+  --host 127.0.0.1 \
+  --port 8765 \
+  --output-dir ./output \
+  --full-catalog \
+  --max-pages-per-category 200 \
+  --bootstrap-store-code moskva \
+  --log-level DEBUG
+```
+
 ### Основные websocket actions
 
 - `{"action":"ping"}`
 - `{"action":"submit_store","store_code":"C001","city_id":3}`
 - `{"action":"submit_store","store_code":"C001","city_id":3,"full_catalog":true,"max_pages_per_category":200,"products_per_page":27,"api_timeout_ms":120000,"request_retries":5}`
+- `{"action":"submit_store","parser":"chizhik","store_code":"moskva","full_catalog":true,"max_pages_per_category":200,"api_timeout_ms":120000,"request_retries":5}`
 - `{"action":"status"}`
 - `{"action":"status","job_id":"<id>"}`
 - `{"action":"jobs"}`

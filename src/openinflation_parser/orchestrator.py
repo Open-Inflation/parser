@@ -15,7 +15,13 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from .parsers import FixPriceParser, FixPriceParserConfig, get_parser
+from .parsers import (
+    ChizhikParser,
+    ChizhikParserConfig,
+    FixPriceParser,
+    FixPriceParserConfig,
+    get_parser,
+)
 
 from openinflation_dataclass import to_json
 
@@ -144,6 +150,28 @@ def _coerce_bool(value: Any) -> bool:
     return bool(value)
 
 
+def _normalize_city_id(value: Any) -> int | str | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value.is_integer():
+            return int(value)
+        return str(value)
+    if isinstance(value, str):
+        token = value.strip()
+        if not token:
+            return None
+        try:
+            return int(token)
+        except ValueError:
+            return token
+    return str(value)
+
+
 @dataclass(slots=True)
 class WorkerJob:
     job_id: str
@@ -151,7 +179,7 @@ class WorkerJob:
     store_code: str
     output_dir: str
     country_id: int = 2
-    city_id: int | None = None
+    city_id: int | str | None = None
     api_timeout_ms: float = 90000.0
     request_retries: int = 3
     request_retry_backoff_sec: float = 1.5
@@ -164,12 +192,7 @@ class WorkerJob:
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> "WorkerJob":
-        city_id_raw = payload.get("city_id")
-        city_id: int | None
-        if city_id_raw in (None, ""):
-            city_id = None
-        else:
-            city_id = int(city_id_raw)
+        city_id = _normalize_city_id(payload.get("city_id"))
 
         return cls(
             job_id=str(payload["job_id"]),
@@ -200,7 +223,7 @@ class JobDefaults:
     parser_name: str
     output_dir: str
     country_id: int
-    city_id: int | None
+    city_id: int | str | None
     api_timeout_ms: float
     request_retries: int
     request_retry_backoff_sec: float
@@ -230,23 +253,52 @@ async def _execute_store_job(
         job.request_retries,
     )
 
-    if job.parser_name != "fixprice":
+    if job.parser_name == "fixprice":
+        fixprice_city_id: int | None
+        if isinstance(job.city_id, int):
+            fixprice_city_id = job.city_id
+        elif isinstance(job.city_id, str):
+            try:
+                fixprice_city_id = int(job.city_id)
+            except ValueError:
+                fixprice_city_id = None
+        else:
+            fixprice_city_id = None
+
+        config = FixPriceParserConfig(
+            country_id=job.country_id,
+            city_id=fixprice_city_id,
+            proxy=proxy,
+            timeout_ms=job.api_timeout_ms,
+            request_retries=job.request_retries,
+            request_retry_backoff_sec=job.request_retry_backoff_sec,
+            include_images=job.include_images,
+        )
+        parser = FixPriceParser(config)
+        store_city_id: int | str | None = fixprice_city_id
+    elif job.parser_name == "chizhik":
+        chizhik_city_id: str | None
+        if job.city_id is None:
+            chizhik_city_id = None
+        else:
+            chizhik_city_id = str(job.city_id)
+        config = ChizhikParserConfig(
+            country_id=job.country_id,
+            city_id=chizhik_city_id,
+            proxy=proxy,
+            timeout_ms=job.api_timeout_ms,
+            request_retries=job.request_retries,
+            request_retry_backoff_sec=job.request_retry_backoff_sec,
+            include_images=job.include_images,
+        )
+        parser = ChizhikParser(config)
+        store_city_id = job.city_id
+    else:
         parser_cls = get_parser(job.parser_name)
         raise ValueError(
             f"Parser {job.parser_name!r} is registered as {parser_cls.__name__}, "
-            "but worker configuration currently supports only 'fixprice'."
+            "but worker configuration cannot build parser config for it."
         )
-
-    config = FixPriceParserConfig(
-        country_id=job.country_id,
-        city_id=job.city_id,
-        proxy=proxy,
-        timeout_ms=job.api_timeout_ms,
-        request_retries=job.request_retries,
-        request_retry_backoff_sec=job.request_retry_backoff_sec,
-        include_images=job.include_images,
-    )
-    parser = FixPriceParser(config)
 
     async with parser:
         categories = await parser.collect_categories()
@@ -295,7 +347,7 @@ async def _execute_store_job(
 
         stores = await parser.collect_store_info(
             country_id=job.country_id,
-            city_id=job.city_id,
+            city_id=store_city_id,
             store_code=job.store_code,
         )
         LOGGER.info(
@@ -532,14 +584,9 @@ class OrchestratorServer:
             raise ValueError("Field 'store_code' is required for action 'submit_store'.")
 
         parser_name = str(request.get("parser", self.defaults.parser_name)).lower().strip()
-        if parser_name != "fixprice":
-            raise ValueError("Only parser='fixprice' is currently supported.")
+        get_parser(parser_name)
 
-        city_id_raw = request.get("city_id", self.defaults.city_id)
-        if city_id_raw in (None, ""):
-            city_id: int | None = None
-        else:
-            city_id = int(city_id_raw)
+        city_id = _normalize_city_id(request.get("city_id", self.defaults.city_id))
 
         job = WorkerJob(
             job_id=uuid4().hex,
@@ -776,15 +823,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", default="127.0.0.1", help="WebSocket host")
     parser.add_argument("--port", type=int, default=8765, help="WebSocket port")
 
-    parser.add_argument("--parser", default="fixprice", choices=["fixprice"], help="Parser name")
+    parser.add_argument(
+        "--parser",
+        default="fixprice",
+        choices=["fixprice", "chizhik"],
+        help="Parser name",
+    )
     parser.add_argument("--output-dir", default="./output", help="Output directory for payload files")
     parser.add_argument("--country-id", type=int, default=2, help="Default country id")
-    parser.add_argument("--city-id", type=int, default=None, help="Default city id")
+    parser.add_argument(
+        "--city-id",
+        type=str,
+        default=None,
+        help="Default city id (int for fixprice, string/int for chizhik).",
+    )
     parser.add_argument(
         "--api-timeout-ms",
         type=float,
         default=90000.0,
-        help="FixPrice API request timeout in milliseconds.",
+        help="Parser API request timeout in milliseconds.",
     )
     parser.add_argument(
         "--request-retries",

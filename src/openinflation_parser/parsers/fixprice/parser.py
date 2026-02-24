@@ -7,9 +7,9 @@ from typing import Any, Awaitable, Callable, TypeVar
 
 from openinflation_dataclass import AdministrativeUnit, Card, Category, RetailUnit
 
-from .base import StoreParser
-from .fixprice_mapper import FixPriceMapper
-from .fixprice_types import CatalogProductsQuery, FixPriceParserConfig
+from ..base import StoreParser
+from .mapper import FixPriceMapper
+from .types import CatalogProductsQuery, FixPriceParserConfig
 
 
 LOGGER = logging.getLogger(__name__)

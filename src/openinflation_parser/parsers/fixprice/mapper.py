@@ -13,7 +13,7 @@ from openinflation_dataclass import (
     Schedule,
 )
 
-from .fixprice_types import CountryCode, CurrencyCode, ProducerCountryCode
+from .types import CountryCode, CurrencyCode, ProducerCountryCode
 
 
 class FixPriceMapper:

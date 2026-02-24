@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from .base import StoreParser
+from .chizhik import ChizhikParser, ChizhikParserConfig
 from .fixprice import FixPriceParser, FixPriceParserConfig
 
 PARSER_REGISTRY: dict[str, type[StoreParser]] = {
+    "chizhik": ChizhikParser,
     "fixprice": FixPriceParser,
 }
 
@@ -17,6 +19,8 @@ def get_parser(parser_name: str) -> type[StoreParser]:
 
 
 __all__ = [
+    "ChizhikParser",
+    "ChizhikParserConfig",
     "FixPriceParser",
     "FixPriceParserConfig",
     "StoreParser",
