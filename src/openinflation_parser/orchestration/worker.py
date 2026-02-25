@@ -221,6 +221,9 @@ def worker_process_loop(
                 "worker_id": worker_id,
                 "job_id": job.job_id,
                 "timestamp": utc_now_iso(),
+                "output_worker_log": (
+                    str(worker_log_path) if worker_log_path is not None else None
+                ),
             }
         )
 

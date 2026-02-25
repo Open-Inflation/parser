@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import contextlib
 import hashlib
 import hmac
@@ -27,6 +28,7 @@ from .requests import (
     ParsedRequest,
     PingRequest,
     ShutdownRequest,
+    StreamJobLogRequest,
     StatusRequest,
     SubmitStoreRequest,
     UnknownRequest,
@@ -38,6 +40,10 @@ from .worker import worker_process_loop
 
 
 LOGGER = logging.getLogger(__name__)
+
+DEFAULT_LOG_TAIL_LINES = 200
+MAX_LOG_TAIL_LINES = 5000
+LOG_STREAM_POLL_INTERVAL_SEC = 0.4
 
 
 class OrchestratorServer:
@@ -268,6 +274,244 @@ class OrchestratorServer:
             payload.pop("download_sha256", None)
             payload.pop("download_expires_at", None)
         return payload
+
+    @staticmethod
+    def _tail_lines(path: Path, *, lines_limit: int) -> list[str]:
+        if lines_limit <= 0:
+            return []
+        buffer: deque[str] = deque(maxlen=lines_limit)
+        with path.open("r", encoding="utf-8", errors="replace") as file_stream:
+            for raw_line in file_stream:
+                buffer.append(raw_line.rstrip("\r\n"))
+        return list(buffer)
+
+    @staticmethod
+    def _read_log_chunk(path: Path, *, offset: int) -> tuple[bytes, int]:
+        safe_offset = max(0, offset)
+        with path.open("rb") as file_stream:
+            file_stream.seek(safe_offset)
+            chunk = file_stream.read()
+            return chunk, file_stream.tell()
+
+    async def _stream_job_log(self, websocket: Any, request: StreamJobLogRequest) -> None:
+        job_id = request.job_id.strip()
+        if not job_id:
+            await websocket.send(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "action": request.action,
+                        "event": "error",
+                        "error": "Field 'job_id' is required.",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return
+
+        tail_lines = request.tail_lines
+        if tail_lines is None:
+            tail_lines = DEFAULT_LOG_TAIL_LINES
+        tail_lines = max(0, min(MAX_LOG_TAIL_LINES, int(tail_lines)))
+
+        sent_snapshot = False
+        sent_waiting = False
+        offset = 0
+        pending_fragment = ""
+        terminal_statuses = {"success", "error"}
+
+        while True:
+            job_state = self._job_store.get(job_id)
+            if job_state is None:
+                await websocket.send(
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "action": request.action,
+                            "event": "error",
+                            "job_id": job_id,
+                            "error": "Job not found.",
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+                return
+
+            job_status = str(job_state.get("status", "unknown")).strip().lower()
+            worker_id = self._worker_id_from_value(job_state.get("worker_id"))
+            log_path_token = str(job_state.get("output_worker_log", "")).strip()
+            if not log_path_token:
+                if not sent_waiting:
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "ok": True,
+                                "action": request.action,
+                                "event": "waiting",
+                                "job_id": job_id,
+                                "worker_id": worker_id,
+                                "status": job_status,
+                                "message": "Worker log is not available yet.",
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                    sent_waiting = True
+
+                if job_status in terminal_statuses:
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "ok": True,
+                                "action": request.action,
+                                "event": "end",
+                                "job_id": job_id,
+                                "worker_id": worker_id,
+                                "status": job_status,
+                                "lines": [],
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                    return
+
+                await asyncio.sleep(LOG_STREAM_POLL_INTERVAL_SEC)
+                continue
+
+            log_path = Path(log_path_token)
+            if not log_path.is_file():
+                if not sent_waiting:
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "ok": True,
+                                "action": request.action,
+                                "event": "waiting",
+                                "job_id": job_id,
+                                "worker_id": worker_id,
+                                "status": job_status,
+                                "message": "Worker log file is being prepared.",
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                    sent_waiting = True
+
+                if job_status in terminal_statuses:
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "ok": False,
+                                "action": request.action,
+                                "event": "error",
+                                "job_id": job_id,
+                                "worker_id": worker_id,
+                                "status": job_status,
+                                "error": "Worker log file is missing.",
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                    return
+
+                await asyncio.sleep(LOG_STREAM_POLL_INTERVAL_SEC)
+                continue
+
+            sent_waiting = False
+
+            if not sent_snapshot:
+                snapshot_lines = await asyncio.to_thread(
+                    self._tail_lines,
+                    log_path,
+                    lines_limit=tail_lines,
+                )
+                await websocket.send(
+                    json.dumps(
+                        {
+                            "ok": True,
+                            "action": request.action,
+                            "event": "snapshot",
+                            "job_id": job_id,
+                            "worker_id": worker_id,
+                            "status": job_status,
+                            "lines": snapshot_lines,
+                            "tail_lines": tail_lines,
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+                try:
+                    offset = log_path.stat().st_size
+                except FileNotFoundError:
+                    offset = 0
+                sent_snapshot = True
+
+            chunk, new_offset = await asyncio.to_thread(
+                self._read_log_chunk,
+                log_path,
+                offset=offset,
+            )
+            if new_offset < offset:
+                offset = 0
+                pending_fragment = ""
+                continue
+            offset = new_offset
+
+            if chunk:
+                decoded = pending_fragment + chunk.decode("utf-8", errors="replace")
+                lines = decoded.splitlines()
+                if decoded.endswith(("\n", "\r")):
+                    pending_fragment = ""
+                else:
+                    pending_fragment = lines.pop() if lines else decoded
+                if lines:
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "ok": True,
+                                "action": request.action,
+                                "event": "append",
+                                "job_id": job_id,
+                                "worker_id": worker_id,
+                                "status": job_status,
+                                "lines": lines,
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+
+            if job_status in terminal_statuses:
+                if pending_fragment:
+                    await websocket.send(
+                        json.dumps(
+                            {
+                                "ok": True,
+                                "action": request.action,
+                                "event": "append",
+                                "job_id": job_id,
+                                "worker_id": worker_id,
+                                "status": job_status,
+                                "lines": [pending_fragment],
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                await websocket.send(
+                    json.dumps(
+                        {
+                            "ok": True,
+                            "action": request.action,
+                            "event": "end",
+                            "job_id": job_id,
+                            "worker_id": worker_id,
+                            "status": job_status,
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+                return
+
+            await asyncio.sleep(LOG_STREAM_POLL_INTERVAL_SEC)
 
     def _build_download_app(self) -> Any:
         try:
@@ -569,6 +813,9 @@ class OrchestratorServer:
                 event_worker_id = self._worker_id_from_value(event.get("worker_id"))
                 if event_worker_id is not None:
                     job_state["worker_id"] = event_worker_id
+                output_worker_log = str(event.get("output_worker_log", "")).strip()
+                if output_worker_log:
+                    job_state["output_worker_log"] = output_worker_log
                 self._job_store.upsert(job_state)
                 LOGGER.info(
                     "Job %s started on worker %s",
@@ -876,6 +1123,13 @@ class OrchestratorServer:
             if isinstance(request, WorkersRequest):
                 return {"ok": True, "action": request.action, "workers": self._workers_status()}
 
+            if isinstance(request, StreamJobLogRequest):
+                return {
+                    "ok": False,
+                    "action": request.action,
+                    "error": "Action 'stream_job_log' is a streaming command and must be handled in websocket session mode.",
+                }
+
             if isinstance(request, ShutdownRequest):
                 self._stop_event.set()
                 return {
@@ -895,6 +1149,7 @@ class OrchestratorServer:
                         "status",
                         "jobs",
                         "workers",
+                        "stream_job_log",
                         "shutdown",
                     ],
                 }
@@ -919,6 +1174,22 @@ class OrchestratorServer:
                 LOGGER.warning("Invalid client message: %s", exc)
                 response = {"ok": False, "error": f"Invalid JSON payload: {exc}"}
                 await websocket.send(json.dumps(response, ensure_ascii=False))
+                continue
+
+            if isinstance(request, StreamJobLogRequest):
+                try:
+                    await self._stream_job_log(websocket, request)
+                except Exception as exc:
+                    LOGGER.warning("Log stream request failed: job_id=%s error=%s", request.job_id, exc)
+                    response = {
+                        "ok": False,
+                        "action": request.action,
+                        "event": "error",
+                        "job_id": request.job_id,
+                        "error": str(exc),
+                    }
+                    with contextlib.suppress(Exception):
+                        await websocket.send(json.dumps(response, ensure_ascii=False))
                 continue
 
             response = await self._dispatch(request)

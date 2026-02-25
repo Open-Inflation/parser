@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictStr
 
 from .models import normalize_city_id
 
@@ -46,6 +46,12 @@ class WorkersRequest(RequestModel):
     action: Literal["workers"]
 
 
+class StreamJobLogRequest(RequestModel):
+    action: Literal["stream_job_log"]
+    job_id: str = Field(min_length=1)
+    tail_lines: int | None = Field(default=None, ge=0, le=5000)
+
+
 class ShutdownRequest(RequestModel):
     action: Literal["shutdown"]
 
@@ -64,6 +70,7 @@ ParsedRequest: TypeAlias = (
     | StatusRequest
     | JobsRequest
     | WorkersRequest
+    | StreamJobLogRequest
     | ShutdownRequest
     | HelpRequest
     | UnknownRequest
@@ -76,6 +83,7 @@ ACTION_TO_MODEL: dict[str, type[RequestModel]] = {
     "status": StatusRequest,
     "jobs": JobsRequest,
     "workers": WorkersRequest,
+    "stream_job_log": StreamJobLogRequest,
     "shutdown": ShutdownRequest,
     "help": HelpRequest,
 }

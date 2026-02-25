@@ -140,7 +140,12 @@ openinflation-orchestrator \
 - `{"action":"status","job_id":"<id>","password":"<your-password>"}`
 - `{"action":"jobs","password":"<your-password>"}`
 - `{"action":"workers","password":"<your-password>"}`
+- `{"action":"stream_job_log","job_id":"<id>","tail_lines":200,"password":"<your-password>"}`
 - `{"action":"shutdown","password":"<your-password>"}`
+
+`stream_job_log` работает как потоковый websocket-action: после запроса сервер отправляет события
+`waiting` -> `snapshot` -> `append` -> `end` (или `error`). Параметр `tail_lines` задает, сколько
+последних строк отдать в первом `snapshot` (по умолчанию 200, максимум 5000).
 
 Для успешной задачи в `status/jobs` возвращаются:
 - `output_json`, `output_gz`

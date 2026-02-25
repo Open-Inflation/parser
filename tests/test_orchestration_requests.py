@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+import json
 from pathlib import Path
 from queue import Queue
 import sqlite3
@@ -13,6 +14,7 @@ from openinflation_parser.orchestration.models import JobDefaults, WorkerJob
 from openinflation_parser.orchestration.server import OrchestratorServer
 from openinflation_parser.orchestration.job_store import JobStore
 from openinflation_parser.orchestration.requests import (
+    StreamJobLogRequest,
     SubmitStoreRequest,
     UnknownRequest,
     parse_request,
@@ -40,6 +42,13 @@ def test_parse_request_requires_action() -> None:
 def test_parse_request_unknown_action() -> None:
     request = parse_request({"action": "something_new"})
     assert isinstance(request, UnknownRequest)
+
+
+def test_parse_request_stream_job_log_model() -> None:
+    request = parse_request({"action": "stream_job_log", "job_id": "job-123", "tail_lines": 150})
+    assert isinstance(request, StreamJobLogRequest)
+    assert request.job_id == "job-123"
+    assert request.tail_lines == 150
 
 
 def test_parse_request_accepts_password() -> None:
@@ -299,6 +308,49 @@ def test_help_reports_auth_required_flag() -> None:
     )
     assert response["ok"] is True
     assert response["auth_required"] is True
+    assert "stream_job_log" in response["actions"]
+
+
+def test_stream_job_log_returns_tail_and_end(tmp_path: Path) -> None:
+    defaults = _job_defaults()
+    server = OrchestratorServer(
+        host="127.0.0.1",
+        port=8765,
+        worker_count=1,
+        proxies=[],
+        defaults=defaults,
+        jobs_db_path=None,
+    )
+
+    log_file = tmp_path / "worker.log"
+    log_file.write_text("line-1\nline-2\nline-3\n", encoding="utf-8")
+    server._job_store.upsert(
+        {
+            "job_id": "job-log-1",
+            "status": "success",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "finished_at": "2026-01-01T00:01:00+00:00",
+            "worker_id": 1,
+            "output_worker_log": str(log_file),
+        }
+    )
+
+    class _FakeWebsocket:
+        def __init__(self) -> None:
+            self.sent_payloads: list[dict[str, object]] = []
+
+        async def send(self, payload: str) -> None:
+            self.sent_payloads.append(json.loads(payload))
+
+    request = parse_request({"action": "stream_job_log", "job_id": "job-log-1", "tail_lines": 2})
+    assert isinstance(request, StreamJobLogRequest)
+    fake_websocket = _FakeWebsocket()
+
+    asyncio.run(server._stream_job_log(fake_websocket, request))
+
+    assert fake_websocket.sent_payloads[0]["event"] == "snapshot"
+    assert fake_websocket.sent_payloads[0]["lines"] == ["line-2", "line-3"]
+    assert fake_websocket.sent_payloads[-1]["event"] == "end"
 
 
 def test_dispatch_rules_allow_same_proxy_for_different_parsers() -> None:
