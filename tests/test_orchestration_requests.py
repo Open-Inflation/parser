@@ -42,6 +42,16 @@ def test_parse_request_unknown_action() -> None:
     assert isinstance(request, UnknownRequest)
 
 
+def test_parse_request_accepts_password() -> None:
+    request = parse_request({"action": "ping", "password": "secret"})
+    assert request.password == "secret"
+
+
+def test_parse_request_rejects_non_string_password() -> None:
+    with pytest.raises(ValueError):
+        parse_request({"action": "ping", "password": 123})
+
+
 def test_parse_request_rejects_extra_fields() -> None:
     with pytest.raises(Exception):
         parse_request({"action": "ping", "extra": 1})
@@ -234,6 +244,61 @@ def test_run_calls_stop_when_bootstrap_fails(monkeypatch: pytest.MonkeyPatch) ->
         asyncio.run(server.run(bootstrap_store_code="C001"))
 
     assert state["stop_called"] is True
+
+
+def test_dispatch_requires_auth_password_when_configured() -> None:
+    defaults = _job_defaults()
+    server = OrchestratorServer(
+        host="127.0.0.1",
+        port=8765,
+        worker_count=1,
+        proxies=[],
+        defaults=defaults,
+        jobs_db_path=None,
+        auth_password="secret",
+    )
+
+    response = asyncio.run(server._dispatch(parse_request({"action": "ping"})))
+    assert response["ok"] is False
+    assert response["error"] == "Unauthorized. Provide valid 'password'."
+
+
+def test_dispatch_accepts_auth_password_when_configured() -> None:
+    defaults = _job_defaults()
+    server = OrchestratorServer(
+        host="127.0.0.1",
+        port=8765,
+        worker_count=1,
+        proxies=[],
+        defaults=defaults,
+        jobs_db_path=None,
+        auth_password="secret",
+    )
+
+    response = asyncio.run(
+        server._dispatch(parse_request({"action": "ping", "password": "secret"}))
+    )
+    assert response["ok"] is True
+    assert response["action"] == "pong"
+
+
+def test_help_reports_auth_required_flag() -> None:
+    defaults = _job_defaults()
+    server = OrchestratorServer(
+        host="127.0.0.1",
+        port=8765,
+        worker_count=1,
+        proxies=[],
+        defaults=defaults,
+        jobs_db_path=None,
+        auth_password="secret",
+    )
+
+    response = asyncio.run(
+        server._dispatch(parse_request({"action": "help", "password": "secret"}))
+    )
+    assert response["ok"] is True
+    assert response["auth_required"] is True
 
 
 def test_dispatch_rules_allow_same_proxy_for_different_parsers() -> None:

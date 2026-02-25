@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from typing import Any, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, StrictStr
 
 from .models import normalize_city_id
 
 
 class RequestModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    password: StrictStr | None = None
 
 
 class PingRequest(RequestModel):
@@ -87,8 +88,12 @@ def parse_request(payload: dict[str, Any]) -> ParsedRequest:
 
     action = action_raw.strip().lower()
     model_cls = ACTION_TO_MODEL.get(action)
+    password = payload.get("password")
+    if password is not None and not isinstance(password, str):
+        raise ValueError("Field 'password' must be a string.")
+
     if model_cls is None:
-        return UnknownRequest(action=action)
+        return UnknownRequest(action=action, password=password)
 
     normalized = dict(payload)
     normalized["action"] = action

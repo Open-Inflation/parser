@@ -53,6 +53,7 @@ class OrchestratorServer:
         jobs_max_history: int = 1000,
         jobs_retention_sec: int = 86400,
         jobs_db_path: str | None = None,
+        auth_password: str | None = None,
         download_host: str | None = None,
         download_port: int | None = None,
         download_url_ttl_sec: int = 3600,
@@ -64,6 +65,9 @@ class OrchestratorServer:
         self.download_port = int(download_port if download_port is not None else (port + 1))
         self.download_url_ttl_sec = max(30, int(download_url_ttl_sec))
         self._download_secret = (download_secret or secrets.token_hex(32)).encode("utf-8")
+        if auth_password == "":
+            raise ValueError("auth_password must be non-empty when provided.")
+        self._auth_password = auth_password
         self.worker_count = max(1, worker_count)
         self.proxies = proxies
         self.defaults = defaults
@@ -826,8 +830,23 @@ class OrchestratorServer:
             )
         return rows
 
+    def _is_authenticated(self, request: ParsedRequest) -> bool:
+        if self._auth_password is None:
+            return True
+        request_password = getattr(request, "password", None)
+        if not isinstance(request_password, str):
+            return False
+        return secrets.compare_digest(request_password, self._auth_password)
+
     async def _dispatch(self, request: ParsedRequest) -> dict[str, Any]:
         try:
+            if not self._is_authenticated(request):
+                return {
+                    "ok": False,
+                    "action": getattr(request, "action", None),
+                    "error": "Unauthorized. Provide valid 'password'.",
+                }
+
             if isinstance(request, PingRequest):
                 return {"ok": True, "action": "pong", "timestamp": utc_now_iso()}
 
@@ -869,6 +888,7 @@ class OrchestratorServer:
                 return {
                     "ok": True,
                     "action": request.action,
+                    "auth_required": self._auth_password is not None,
                     "actions": [
                         "ping",
                         "submit_store",
@@ -925,10 +945,14 @@ class OrchestratorServer:
                 LOGGER.info(
                     "No bootstrap store configured. Waiting for WebSocket action 'submit_store'."
                 )
-                LOGGER.info(
-                    "Example: {\"action\":\"submit_store\",\"store_code\":\"C001\",\"city_id\":%s}",
-                    self.defaults.city_id,
-                )
+                example_payload: dict[str, Any] = {
+                    "action": "submit_store",
+                    "store_code": "C001",
+                    "city_id": self.defaults.city_id,
+                }
+                if self._auth_password is not None:
+                    example_payload["password"] = "<your-password>"
+                LOGGER.info("Example: %s", json.dumps(example_payload, ensure_ascii=False))
 
             LOGGER.info("WebSocket server listening on ws://%s:%s", self.host, self.port)
             async with websockets.serve(self._handle_client, self.host, self.port):

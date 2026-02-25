@@ -41,6 +41,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional HMAC secret for signed download URLs. If omitted, generated on startup.",
     )
+    parser.add_argument(
+        "--auth-password",
+        default=None,
+        help="Optional static password for WebSocket actions.",
+    )
 
     parser.add_argument(
         "--parser",
@@ -189,6 +194,9 @@ async def run_orchestrator(args: argparse.Namespace) -> None:
     jobs_db_path = args.jobs_db_path.strip() if isinstance(args.jobs_db_path, str) else None
     if jobs_db_path == "":
         jobs_db_path = None
+    auth_password = args.auth_password
+    if isinstance(auth_password, str) and not auth_password.strip():
+        raise ValueError("--auth-password must be non-empty when provided.")
     download_host = args.download_host or args.host
     download_port = args.download_port if args.download_port is not None else (args.port + 1)
 
@@ -213,6 +221,7 @@ async def run_orchestrator(args: argparse.Namespace) -> None:
                 "jobs_max_history": max(1, args.jobs_max_history),
                 "jobs_retention_sec": max(60, args.jobs_retention_sec),
                 "jobs_db_path": jobs_db_path,
+                "auth_enabled": auth_password is not None,
                 "download_host": download_host,
                 "download_port": download_port,
                 "download_url_ttl_sec": max(30, int(args.download_url_ttl_sec)),
@@ -233,6 +242,7 @@ async def run_orchestrator(args: argparse.Namespace) -> None:
         jobs_max_history=max(1, args.jobs_max_history),
         jobs_retention_sec=max(60, args.jobs_retention_sec),
         jobs_db_path=jobs_db_path,
+        auth_password=auth_password,
         download_host=download_host,
         download_port=download_port,
         download_url_ttl_sec=max(30, int(args.download_url_ttl_sec)),

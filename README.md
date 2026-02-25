@@ -59,6 +59,7 @@ python -m openinflation_parser.orchestrator \
   --port 8765 \
   --parser fixprice \
   --output-dir ./output \
+  --auth-password changeme \
   --country-id 2 \
   --full-catalog \
   --max-pages-per-category 200 \
@@ -79,6 +80,7 @@ python -m openinflation_parser.orchestrator \
 - `--jobs-max-history` — лимит terminal jobs в памяти/БД.
 - `--jobs-retention-sec` — TTL terminal jobs.
 - `--jobs-db-path` — путь к sqlite с состоянием задач (`""` чтобы отключить).
+- `--auth-password` — статический пароль для websocket-команд (если задан, обязателен в каждом payload как `password`).
 - `--download-host` / `--download-port` — где поднимать FastAPI endpoint загрузки.
 - `--download-url-ttl-sec` — время жизни подписанной ссылки.
 - `--download-secret` — HMAC secret для подписи ссылок (если не передан, генерируется при старте).
@@ -127,16 +129,18 @@ openinflation-orchestrator \
 
 ### Основные websocket actions
 
-- `{"action":"ping"}`
-- `{"action":"submit_store","store_code":"C001","city_id":3}`
-- `{"action":"submit_store","store_code":"C001","city_id":3,"full_catalog":true,"max_pages_per_category":200,"products_per_page":27,"api_timeout_ms":120000}`
-- `{"action":"submit_store","parser":"chizhik","store_code":"moskva","full_catalog":true,"max_pages_per_category":200,"api_timeout_ms":120000}`
-- `{"action":"submit_store","parser":"perekrestok","store_code":"1","city_id":81,"full_catalog":true,"max_pages_per_category":200,"api_timeout_ms":120000}`
-- `{"action":"status"}`
-- `{"action":"status","job_id":"<id>"}`
-- `{"action":"jobs"}`
-- `{"action":"workers"}`
-- `{"action":"shutdown"}`
+Если оркестратор запущен с `--auth-password`, добавляйте `"password":"<your-password>"` в каждый payload.
+
+- `{"action":"ping","password":"<your-password>"}`
+- `{"action":"submit_store","store_code":"C001","city_id":3,"password":"<your-password>"}`
+- `{"action":"submit_store","store_code":"C001","city_id":3,"full_catalog":true,"max_pages_per_category":200,"products_per_page":27,"api_timeout_ms":120000,"password":"<your-password>"}`
+- `{"action":"submit_store","parser":"chizhik","store_code":"moskva","full_catalog":true,"max_pages_per_category":200,"api_timeout_ms":120000,"password":"<your-password>"}`
+- `{"action":"submit_store","parser":"perekrestok","store_code":"1","city_id":81,"full_catalog":true,"max_pages_per_category":200,"api_timeout_ms":120000,"password":"<your-password>"}`
+- `{"action":"status","password":"<your-password>"}`
+- `{"action":"status","job_id":"<id>","password":"<your-password>"}`
+- `{"action":"jobs","password":"<your-password>"}`
+- `{"action":"workers","password":"<your-password>"}`
+- `{"action":"shutdown","password":"<your-password>"}`
 
 Для успешной задачи в `status/jobs` возвращаются:
 - `output_json`, `output_gz`
