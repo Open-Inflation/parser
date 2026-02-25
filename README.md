@@ -90,7 +90,7 @@ openinflation-orchestrator \
   --host 127.0.0.1 \
   --port 8765 \
   --output-dir ./output \
-  --full-catalog \
+  --include-images \
   --max-pages-per-category 200 \
   --bootstrap-store-code moskva \
   --log-level DEBUG
@@ -104,9 +104,24 @@ openinflation-orchestrator \
   --port 8765 \
   --output-dir ./output \
   --city-id 81 \
-  --full-catalog \
+  --include-images \
   --max-pages-per-category 200 \
   --bootstrap-store-code 1 \
+  --log-level DEBUG
+```
+
+Пример для FixPrice:
+```bash
+
+openinflation-orchestrator \
+  --parser fixprice \
+  --host 127.0.0.1 \
+  --port 8765 \
+  --output-dir ./output \
+  --city-id 3 \
+  --include-images \
+  --max-pages-per-category 200 \
+  --bootstrap-store-code C001 \
   --log-level DEBUG
 ```
 
