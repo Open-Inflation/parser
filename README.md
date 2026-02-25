@@ -126,10 +126,14 @@ openinflation-orchestrator \
 Для успешной задачи в `status/jobs` возвращаются:
 - `output_json`, `output_gz`
 - `download_url` (подписанный URL FastAPI `/download`)
-- `download_sha256` (контрольная сумма `.json.gz`)
+- `download_sha256` (контрольная сумма архива `.tar.gz`)
 - `download_expires_at` (UTC, до какого момента URL валиден)
 
-После истечения `download_expires_at` оркестратор удаляет файлы `output_json/output_gz`
+После истечения `download_expires_at` оркестратор удаляет файлы `output_json/output_gz/output_worker_log`
 и очищает download-поля у задачи, чтобы не накапливался файловый кэш.
 
-Результат задачи сохраняется файлами `<store_code>_<timestamp>.json` и `<store_code>_<timestamp>.json.gz` в `output_dir`.
+Результат задачи сохраняется файлами `<store_code>_<timestamp>.json` и `<store_code>_<timestamp>.tar.gz` в `output_dir`.
+Архив содержит `meta.json`, `worker.log` (лог процесса воркера по этой задаче) и каталог `images/`; поля изображений в `meta.json` содержат относительные пути до файлов внутри архива.
+Материализация изображений в архив выполняется при запуске с `--include-images`.
+Расширение файлов изображений определяется по сигнатуре содержимого (`jpg/png/webp/...`).
+Если вместо изображения приходит HTML/ошибка WAF, файл не сохраняется, а в `meta.json` ставится `null`/пусто.

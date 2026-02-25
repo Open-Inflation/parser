@@ -3,16 +3,44 @@ from __future__ import annotations
 import asyncio
 import logging
 import traceback
+from pathlib import Path
 from typing import Any
-
-from openinflation_dataclass import to_json
 
 from ..parsers import ParserRunSettings, get_parser_adapter
 from .models import WorkerJob
-from .utils import setup_logging, utc_now_iso, write_payload
+from .utils import safe_store_code, setup_logging, utc_now_iso, write_store_bundle
 
 
 LOGGER = logging.getLogger(__name__)
+LOG_FORMAT = "%(asctime)s | %(levelname)s | %(processName)s | %(name)s | %(message)s"
+
+
+def _worker_job_log_path(*, job: WorkerJob, worker_id: int) -> Path:
+    output_dir = Path(job.output_dir).expanduser().resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir / (
+        f".worker_{worker_id}_{safe_store_code(job.store_code)}_{safe_store_code(job.job_id)}.log"
+    )
+
+
+def _attach_worker_job_log_handler(
+    *,
+    job: WorkerJob,
+    worker_id: int,
+    log_level: str,
+) -> tuple[Path, logging.Handler]:
+    log_path = _worker_job_log_path(job=job, worker_id=worker_id)
+    handler = logging.FileHandler(log_path, encoding="utf-8")
+    handler.setLevel(getattr(logging, log_level.upper(), logging.INFO))
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    logging.getLogger().addHandler(handler)
+    return log_path, handler
+
+
+def _detach_worker_job_log_handler(handler: logging.Handler) -> None:
+    root_logger = logging.getLogger()
+    root_logger.removeHandler(handler)
+    handler.close()
 
 
 async def execute_store_job(
@@ -20,15 +48,17 @@ async def execute_store_job(
     proxy: str | None,
     *,
     worker_id: int,
+    worker_log_path: str | None = None,
 ) -> tuple[str, str]:
     LOGGER.info(
-        "Worker %s started job %s for store=%s parser=%s city_id=%s full_catalog=%s timeout_ms=%s strict_validation=%s",
+        "Worker %s started job %s for store=%s parser=%s city_id=%s full_catalog=%s include_images=%s timeout_ms=%s strict_validation=%s",
         worker_id,
         job.job_id,
         job.store_code,
         job.parser_name,
         job.city_id,
         job.full_catalog,
+        job.include_images,
         job.api_timeout_ms,
         job.strict_validation,
     )
@@ -109,14 +139,14 @@ async def execute_store_job(
             )
 
         store = stores[0].model_copy(update={"categories": selected_categories, "products": products})
-        payload = to_json(store)
-        json_path, json_gz_path = write_payload(
-            payload,
+        json_path, json_gz_path = write_store_bundle(
+            store,
             output_dir=job.output_dir,
             store_code=job.store_code,
+            worker_log_path=worker_log_path,
         )
         LOGGER.info(
-            "Worker %s finished job %s successfully: json=%s gz=%s",
+            "Worker %s finished job %s successfully: json=%s archive=%s",
             worker_id,
             job.job_id,
             json_path,
@@ -157,11 +187,32 @@ def worker_process_loop(
             )
             continue
 
+        worker_log_path: Path | None = None
+        worker_log_handler: logging.Handler | None = None
+        try:
+            worker_log_path, worker_log_handler = _attach_worker_job_log_handler(
+                job=job,
+                worker_id=worker_id,
+                log_level=log_level,
+            )
+            LOGGER.info(
+                "Worker %s job %s log file attached: %s",
+                worker_id,
+                job.job_id,
+                worker_log_path,
+            )
+        except Exception:
+            LOGGER.exception(
+                "Worker %s failed to initialize job log file for job %s",
+                worker_id,
+                job.job_id,
+            )
         LOGGER.info(
-            "Worker %s picked job %s (store=%s)",
+            "Worker %s picked job %s (store=%s worker_log=%s)",
             worker_id,
             job.job_id,
             job.store_code,
+            worker_log_path if worker_log_path is not None else "none",
         )
         result_queue.put(
             {
@@ -173,9 +224,15 @@ def worker_process_loop(
             }
         )
 
+        job_succeeded = False
         try:
             json_path, json_gz_path = asyncio.run(
-                execute_store_job(job, proxy=proxy, worker_id=worker_id)
+                execute_store_job(
+                    job,
+                    proxy=proxy,
+                    worker_id=worker_id,
+                    worker_log_path=str(worker_log_path) if worker_log_path is not None else None,
+                )
             )
             result_queue.put(
                 {
@@ -186,8 +243,12 @@ def worker_process_loop(
                     "timestamp": utc_now_iso(),
                     "output_json": json_path,
                     "output_gz": json_gz_path,
+                    "output_worker_log": (
+                        str(worker_log_path) if worker_log_path is not None else None
+                    ),
                 }
             )
+            job_succeeded = True
         except Exception as exc:
             LOGGER.exception("Worker %s failed job %s: %s", worker_id, job.job_id, exc)
             result_queue.put(
@@ -201,3 +262,16 @@ def worker_process_loop(
                     "traceback": traceback.format_exc(),
                 }
             )
+        finally:
+            if worker_log_handler is not None:
+                _detach_worker_job_log_handler(worker_log_handler)
+            if not job_succeeded and worker_log_path is not None:
+                try:
+                    worker_log_path.unlink(missing_ok=True)
+                except Exception:
+                    LOGGER.exception(
+                        "Worker %s failed to cleanup log file for failed job %s: %s",
+                        worker_id,
+                        job.job_id,
+                        worker_log_path,
+                    )

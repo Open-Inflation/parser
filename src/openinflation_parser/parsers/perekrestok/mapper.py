@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-from io import BytesIO
 from typing import Any, Literal
 
 from openinflation_dataclass import (
@@ -506,8 +505,8 @@ class PerekrestokMapper:
         product: dict[str, Any],
         *,
         categories_uid: list[str] | None = None,
-        main_image: BytesIO | None = None,
-        gallery_images: list[BytesIO] | None = None,
+        main_image: str | None = None,
+        gallery_images: list[str] | None = None,
         strict_validation: bool = False,
     ) -> Card:
         master_data = (
@@ -586,10 +585,9 @@ class PerekrestokMapper:
             "package_quantity": None,
             "package_unit": None,
             "categories_uid": merged_categories_uid,
+            "main_image": main_image,
             "images": gallery_images if gallery_images else None,
         }
-        if main_image is not None:
-            payload["main_image"] = main_image
 
         return cls._build(
             Card,

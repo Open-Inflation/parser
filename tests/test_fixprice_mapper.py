@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from io import BytesIO
 from typing import Any, Iterator
 
 import pytest
@@ -188,17 +187,16 @@ def test_map_product_from_live_response(fixprice_live_payloads: dict[str, Any]) 
 
     mapped = FixPriceMapper.map_product(
         product,
-        main_image=BytesIO(b"main"),
-        gallery_images=[BytesIO(b"extra")],
+        main_image="images/00001/main.bin",
+        gallery_images=["images/00001/gallery_001.bin"],
     )
 
     assert mapped.sku == product.get("sku")
     assert mapped.price is not None
     assert mapped.categories_uid
-    assert mapped.main_image is not None
-    assert mapped.main_image.getvalue() == b"main"
+    assert mapped.main_image == "images/00001/main.bin"
     assert mapped.images is not None
-    assert mapped.images[0].getvalue() == b"extra"
+    assert mapped.images[0] == "images/00001/gallery_001.bin"
 
 
 def test_map_product_does_not_invent_missing_values() -> None:

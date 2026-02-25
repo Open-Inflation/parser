@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from io import BytesIO
 from typing import Any
 
 from openinflation_dataclass import (
@@ -235,8 +234,8 @@ class ChizhikMapper:
         cls,
         product: dict[str, Any],
         *,
-        main_image: BytesIO | None = None,
-        gallery_images: list[BytesIO] | None = None,
+        main_image: str | None = None,
+        gallery_images: list[str] | None = None,
         strict_validation: bool = False,
     ) -> Card:
         raw_meta = product.get("meta_data")
@@ -300,10 +299,9 @@ class ChizhikMapper:
             "package_quantity": None,
             "package_unit": None,
             "categories_uid": cls._flatten_category_uids(product.get("categories_tree")),
+            "main_image": main_image,
             "images": gallery_images if gallery_images else None,
         }
-        if main_image is not None:
-            payload["main_image"] = main_image
         return cls._build(
             Card,
             payload,

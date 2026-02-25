@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-from io import BytesIO
 from typing import Any, Literal
 
 from openinflation_dataclass import (
@@ -349,8 +348,8 @@ class FixPriceMapper:
         cls,
         product: dict[str, Any],
         *,
-        main_image: BytesIO | None = None,
-        gallery_images: list[BytesIO] | None = None,
+        main_image: str | None = None,
+        gallery_images: list[str] | None = None,
         strict_validation: bool = False,
     ) -> Card:
         sku = cls._safe_str(product.get("sku"))
@@ -427,10 +426,9 @@ class FixPriceMapper:
             "package_quantity": cls._safe_float(product.get("packageQuantity")),
             "package_unit": cls._safe_str(product.get("packageUnit")),
             "categories_uid": categories_uid,
+            "main_image": main_image,
             "images": gallery_images if gallery_images else None,
         }
-        if main_image is not None:
-            card_payload["main_image"] = main_image
         return cls._build(
             Card,
             card_payload,

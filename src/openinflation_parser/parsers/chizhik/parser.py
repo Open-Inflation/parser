@@ -191,6 +191,12 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
 
         cards: list[Card] = []
         enriched_count = 0
+        candidate_image_products = 0
+        candidate_image_urls = 0
+        downloaded_main_images = 0
+        downloaded_gallery_images = 0
+        cards_with_downloaded_images = 0
+        no_image_samples_logged = 0
         for item in items:
             if not isinstance(item, dict):
                 continue
@@ -211,6 +217,24 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
                         exc,
                     )
 
+            image_urls = self._extract_image_urls(
+                product=mapped_payload,
+                images_field="images",
+                image_url_field="image",
+            )
+            if image_urls:
+                candidate_image_products += 1
+                candidate_image_urls += len(image_urls)
+            elif self.config.include_images and no_image_samples_logged < 3:
+                no_image_samples_logged += 1
+                LOGGER.debug(
+                    "Product has no image candidates: product_id=%s category_id=%s page=%s keys=%s",
+                    product_id,
+                    query.category_id,
+                    page,
+                    sorted(mapped_payload.keys()),
+                )
+
             main_image, gallery_images = await self._collect_product_images(
                 api=api,
                 product=mapped_payload,
@@ -218,7 +242,14 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
                 images_field="images",
                 image_url_field="image",
                 image_limit=self.config.image_limit_per_product,
+                image_urls=image_urls,
             )
+            gallery_count = len(gallery_images) if isinstance(gallery_images, list) else 0
+            if main_image is not None:
+                downloaded_main_images += 1
+            downloaded_gallery_images += gallery_count
+            if main_image is not None or gallery_count > 0:
+                cards_with_downloaded_images += 1
             cards.append(
                 ChizhikMapper.map_product(
                     mapped_payload,
@@ -229,13 +260,19 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
             )
 
         LOGGER.info(
-            "Collected products page: category_id=%s slug=%s page=%s count=%s enriched=%s total_pages=%s",
+            "Collected products page: category_id=%s slug=%s page=%s count=%s enriched=%s total_pages=%s include_images=%s image_candidates_products=%s image_candidates_urls=%s downloaded_main=%s downloaded_gallery=%s cards_with_downloaded_images=%s",
             query.category_id,
             query.category_slug,
             page,
             len(cards),
             enriched_count,
             total_pages,
+            self.config.include_images,
+            candidate_image_products,
+            candidate_image_urls,
+            downloaded_main_images,
+            downloaded_gallery_images,
+            cards_with_downloaded_images,
         )
         return cards, total_pages
 

@@ -596,6 +596,12 @@ class OrchestratorServer:
                             "Failed to compute output_gz checksum for job %s",
                             job_id,
                         )
+                if "output_worker_log" in event:
+                    output_worker_log = str(event.get("output_worker_log", "")).strip()
+                    if output_worker_log:
+                        job_state["output_worker_log"] = output_worker_log
+                    else:
+                        job_state.pop("output_worker_log", None)
                 if job_state["status"] == "success":
                     self._set_download_metadata(job_state)
                 self._job_store.upsert(job_state)
@@ -626,7 +632,7 @@ class OrchestratorServer:
             job_id = str(job_state.get("job_id", "unknown"))
             paths_to_delete: list[Path] = []
             seen_paths: set[str] = set()
-            for key in ("output_json", "output_gz"):
+            for key in ("output_json", "output_gz", "output_worker_log"):
                 raw_path = str(job_state.get(key, "")).strip()
                 if not raw_path or raw_path in seen_paths:
                     continue
@@ -668,6 +674,7 @@ class OrchestratorServer:
                 "output_json",
                 "output_gz",
                 "output_gz_sha256",
+                "output_worker_log",
                 "download_url",
                 "download_sha256",
                 "download_expires_at",

@@ -397,8 +397,10 @@ def test_cleanup_expired_download_artifacts_removes_files(tmp_path: Path) -> Non
 
     output_json = tmp_path / "job.json"
     output_gz = tmp_path / "job.json.gz"
+    output_worker_log = tmp_path / "job.worker.log"
     output_json.write_text("{}", encoding="utf-8")
     output_gz.write_bytes(b"payload")
+    output_worker_log.write_text("worker\n", encoding="utf-8")
 
     server._job_store.upsert(
         {
@@ -408,6 +410,7 @@ def test_cleanup_expired_download_artifacts_removes_files(tmp_path: Path) -> Non
             "finished_at": "2026-01-01T00:01:00+00:00",
             "output_json": str(output_json),
             "output_gz": str(output_gz),
+            "output_worker_log": str(output_worker_log),
             "output_gz_sha256": server._sha256_file(str(output_gz)),
             "download_expires_ts": int(datetime.now(timezone.utc).timestamp()) - 1,
             "download_expires_at": datetime.now(timezone.utc).isoformat(),
@@ -418,12 +421,14 @@ def test_cleanup_expired_download_artifacts_removes_files(tmp_path: Path) -> Non
     assert cleaned == 1
     assert not output_json.exists()
     assert not output_gz.exists()
+    assert not output_worker_log.exists()
 
     job = server._job_store.get("job-expired-1")
     assert job is not None
     assert "output_json" not in job
     assert "output_gz" not in job
     assert "output_gz_sha256" not in job
+    assert "output_worker_log" not in job
     assert "download_expires_ts" not in job
     assert "artifacts_deleted_at" in job
 
@@ -442,8 +447,10 @@ def test_cleanup_expired_download_artifacts_skips_active_links(tmp_path: Path) -
 
     output_json = tmp_path / "job_active.json"
     output_gz = tmp_path / "job_active.json.gz"
+    output_worker_log = tmp_path / "job_active.worker.log"
     output_json.write_text("{}", encoding="utf-8")
     output_gz.write_bytes(b"payload")
+    output_worker_log.write_text("worker\n", encoding="utf-8")
 
     future_expires = datetime.now(timezone.utc) + timedelta(hours=2)
     server._job_store.upsert(
@@ -454,6 +461,7 @@ def test_cleanup_expired_download_artifacts_skips_active_links(tmp_path: Path) -
             "finished_at": "2026-01-01T00:01:00+00:00",
             "output_json": str(output_json),
             "output_gz": str(output_gz),
+            "output_worker_log": str(output_worker_log),
             "output_gz_sha256": server._sha256_file(str(output_gz)),
             "download_expires_ts": int(future_expires.timestamp()),
             "download_expires_at": future_expires.isoformat(),
@@ -464,3 +472,4 @@ def test_cleanup_expired_download_artifacts_skips_active_links(tmp_path: Path) -
     assert cleaned == 0
     assert output_json.exists()
     assert output_gz.exists()
+    assert output_worker_log.exists()

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from io import BytesIO
 from typing import Any, Iterator
 
 import pytest
@@ -214,8 +213,8 @@ def test_map_product_from_live_list_response(chizhik_live_payloads: dict[str, An
 
     mapped = ChizhikMapper.map_product(
         product,
-        main_image=BytesIO(b"main"),
-        gallery_images=[BytesIO(b"extra")],
+        main_image="images/00001/main.bin",
+        gallery_images=["images/00001/gallery_001.bin"],
     )
 
     assert mapped.sku is None
@@ -235,10 +234,9 @@ def test_map_product_from_live_list_response(chizhik_live_payloads: dict[str, An
     assert mapped.expiration_date_in_days == expected["expiration_date_in_days"]
     assert mapped.categories_uid is not None
     assert str(product["categories_tree"][0]["id"]) in mapped.categories_uid
-    assert mapped.main_image is not None
-    assert mapped.main_image.getvalue() == b"main"
+    assert mapped.main_image == "images/00001/main.bin"
     assert mapped.images is not None
-    assert mapped.images[0].getvalue() == b"extra"
+    assert mapped.images[0] == "images/00001/gallery_001.bin"
 
 
 def test_map_product_from_live_info_response(chizhik_live_payloads: dict[str, Any]) -> None:

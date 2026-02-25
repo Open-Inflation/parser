@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from io import BytesIO
 from typing import Any, Iterator
 
 import pytest
@@ -256,8 +255,8 @@ def test_map_product_from_live_feed_response(perekrestok_live_payloads: dict[str
     mapped = PerekrestokMapper.map_product(
         product,
         categories_uid=[str(category_id)],
-        main_image=BytesIO(b"main"),
-        gallery_images=[BytesIO(b"extra")],
+        main_image="images/00001/main.bin",
+        gallery_images=["images/00001/gallery_001.bin"],
     )
 
     master_data = product["masterData"]
@@ -274,10 +273,9 @@ def test_map_product_from_live_feed_response(perekrestok_live_payloads: dict[str
     assert mapped.price_unit == "RUB"
     assert mapped.categories_uid is not None
     assert str(category_id) in mapped.categories_uid
-    assert mapped.main_image is not None
-    assert mapped.main_image.getvalue() == b"main"
+    assert mapped.main_image == "images/00001/main.bin"
     assert mapped.images is not None
-    assert mapped.images[0].getvalue() == b"extra"
+    assert mapped.images[0] == "images/00001/gallery_001.bin"
 
 
 def test_map_product_from_live_info_response(perekrestok_live_payloads: dict[str, Any]) -> None:
