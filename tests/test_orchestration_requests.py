@@ -473,3 +473,41 @@ def test_cleanup_expired_download_artifacts_skips_active_links(tmp_path: Path) -
     assert output_json.exists()
     assert output_gz.exists()
     assert output_worker_log.exists()
+
+
+def test_cleanup_expired_download_artifacts_is_idempotent(tmp_path: Path) -> None:
+    defaults = _job_defaults()
+    server = OrchestratorServer(
+        host="127.0.0.1",
+        port=8765,
+        worker_count=1,
+        proxies=[],
+        defaults=defaults,
+        jobs_db_path=None,
+        download_secret="test-secret",
+    )
+
+    output_json = tmp_path / "job_idempotent.json"
+    output_gz = tmp_path / "job_idempotent.json.gz"
+    output_json.write_text("{}", encoding="utf-8")
+    output_gz.write_bytes(b"payload")
+
+    server._job_store.upsert(
+        {
+            "job_id": "job-idempotent-1",
+            "status": "success",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "finished_at": "2026-01-01T00:01:00+00:00",
+            "output_json": str(output_json),
+            "output_gz": str(output_gz),
+            "output_gz_sha256": server._sha256_file(str(output_gz)),
+            "download_expires_ts": int(datetime.now(timezone.utc).timestamp()) - 1,
+            "download_expires_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+
+    cleaned_first = server._cleanup_expired_download_artifacts()
+    cleaned_second = server._cleanup_expired_download_artifacts()
+
+    assert cleaned_first == 1
+    assert cleaned_second == 0

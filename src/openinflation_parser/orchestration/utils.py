@@ -27,6 +27,9 @@ def setup_logging(level: str) -> int:
         level=numeric_level,
         format="%(asctime)s | %(levelname)s | %(processName)s | %(name)s | %(message)s",
     )
+    # Keep third-party retry internals from flooding DEBUG logs for every request.
+    third_party_level = max(logging.INFO, numeric_level)
+    logging.getLogger("aiohttp_retry").setLevel(third_party_level)
     return int(numeric_level)
 
 

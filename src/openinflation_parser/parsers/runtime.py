@@ -76,8 +76,15 @@ class ParserRuntimeMixin:
             return None
         try:
             stream = await api.General.download_image(url=url)
-        except Exception:
-            LOGGER.exception("Image download failed: %s", url)
+        except Exception as exc:
+            LOGGER.warning(
+                "Image download failed: url=%s error=%s detail=%s",
+                url,
+                type(exc).__name__,
+                exc,
+            )
+            if LOGGER.isEnabledFor(logging.DEBUG):
+                LOGGER.debug("Image download traceback: url=%s", url, exc_info=True)
             return None
         payload = stream.getvalue()
         if not payload:

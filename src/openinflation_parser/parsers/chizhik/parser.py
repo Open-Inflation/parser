@@ -12,6 +12,7 @@ from .types import CatalogProductsQuery, ChizhikParserConfig
 
 
 LOGGER = logging.getLogger(__name__)
+PAGE_PROGRESS_LOG_EVERY = 10
 
 
 class ChizhikParser(ParserRuntimeMixin, StoreParser):
@@ -20,6 +21,7 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
     def __init__(self, config: ChizhikParserConfig | None = None):
         self.config = config or ChizhikParserConfig()
         self._api: Any = None
+        self._effective_city_id: str | None = self.config.city_id
         self._city_cache: dict[str, AdministrativeUnit] = {}
         self._product_info_cache: dict[int, dict[str, Any]] = {}
 
@@ -28,7 +30,7 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
 
         LOGGER.info(
             "Initializing Chizhik API client: city_id=%s include_images=%s timeout_ms=%s",
-            self.config.city_id,
+            self._effective_city_id,
             self.config.include_images,
             self.config.timeout_ms,
         )
@@ -99,7 +101,7 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
         api = self._require_api()
         response = await api.Catalog.Product.info(
             product_id=product_id,
-            city_id=self.config.city_id,
+            city_id=self._effective_city_id,
         )
         payload = response.json()
         if not isinstance(payload, dict):
@@ -177,7 +179,7 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
         response = await api.Catalog.products_list(
             page=page,
             category_id=query.category_id,
-            city_id=self.config.city_id,
+            city_id=self._effective_city_id,
         )
         payload = response.json()
         if not isinstance(payload, dict):
@@ -189,6 +191,7 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
         if not isinstance(items, list):
             return [], total_pages
 
+        total_items = len(items)
         cards: list[Card] = []
         enriched_count = 0
         candidate_image_products = 0
@@ -197,8 +200,22 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
         downloaded_gallery_images = 0
         cards_with_downloaded_images = 0
         no_image_samples_logged = 0
-        for item in items:
+        for item_index, item in enumerate(items, start=1):
             if not isinstance(item, dict):
+                if item_index % PAGE_PROGRESS_LOG_EVERY == 0 or item_index == total_items:
+                    LOGGER.info(
+                        "Collecting products progress: category_id=%s slug=%s page=%s inspected=%s/%s mapped=%s enriched=%s image_candidates_products=%s downloaded_main=%s downloaded_gallery=%s",
+                        query.category_id,
+                        query.category_slug,
+                        page,
+                        item_index,
+                        total_items,
+                        len(cards),
+                        enriched_count,
+                        candidate_image_products,
+                        downloaded_main_images,
+                        downloaded_gallery_images,
+                    )
                 continue
             mapped_payload = item
             product_id = self._product_id_from_raw(item.get("id"))
@@ -258,6 +275,20 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
                     strict_validation=self.config.strict_validation,
                 )
             )
+            if item_index % PAGE_PROGRESS_LOG_EVERY == 0 or item_index == total_items:
+                LOGGER.info(
+                    "Collecting products progress: category_id=%s slug=%s page=%s inspected=%s/%s mapped=%s enriched=%s image_candidates_products=%s downloaded_main=%s downloaded_gallery=%s",
+                    query.category_id,
+                    query.category_slug,
+                    page,
+                    item_index,
+                    total_items,
+                    len(cards),
+                    enriched_count,
+                    candidate_image_products,
+                    downloaded_main_images,
+                    downloaded_gallery_images,
+                )
 
         LOGGER.info(
             "Collected products page: category_id=%s slug=%s page=%s count=%s enriched=%s total_pages=%s include_images=%s image_candidates_products=%s image_candidates_urls=%s downloaded_main=%s downloaded_gallery=%s cards_with_downloaded_images=%s",
@@ -342,10 +373,35 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
 
     async def collect_categories(self) -> list[Category]:
         api = self._require_api()
-        LOGGER.info("Collecting Chizhik category tree")
-        response = await api.Catalog.tree(city_id=self.config.city_id)
+        configured_city_id = self._effective_city_id
+        LOGGER.info("Collecting Chizhik category tree: city_id=%s", configured_city_id)
+        response = await api.Catalog.tree(city_id=configured_city_id)
         raw_tree = response.json()
+        fallback_used = False
+
+        if configured_city_id is not None and (not isinstance(raw_tree, list) or not raw_tree):
+            LOGGER.warning(
+                "Chizhik category tree is empty/invalid for city_id=%s (type=%s). "
+                "Retrying without city_id.",
+                configured_city_id,
+                type(raw_tree).__name__,
+            )
+            response = await api.Catalog.tree()
+            raw_tree = response.json()
+            if isinstance(raw_tree, list):
+                self._effective_city_id = None
+                fallback_used = True
+                LOGGER.info(
+                    "Chizhik category tree fallback succeeded without city_id: categories=%s",
+                    len(raw_tree),
+                )
+
         if not isinstance(raw_tree, list):
+            LOGGER.warning(
+                "Chizhik category tree has invalid payload type: type=%s city_id=%s",
+                type(raw_tree).__name__,
+                self._effective_city_id,
+            )
             return []
 
         categories: list[Category] = []
@@ -358,7 +414,12 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
                     )
                 )
 
-        LOGGER.info("Collected categories: %s", len(categories))
+        LOGGER.info(
+            "Collected categories: %s (effective_city_id=%s fallback=%s)",
+            len(categories),
+            self._effective_city_id,
+            fallback_used,
+        )
         return categories
 
     async def collect_products(

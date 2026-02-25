@@ -625,6 +625,12 @@ class OrchestratorServer:
             if str(job_state.get("status")) != "success":
                 continue
 
+            artifact_keys = ("output_json", "output_gz", "output_worker_log")
+            has_artifact_paths = any(str(job_state.get(key, "")).strip() for key in artifact_keys)
+            # Job was already cleaned in a previous heartbeat/run.
+            if job_state.get("artifacts_deleted_at") and not has_artifact_paths:
+                continue
+
             expires_ts = self._resolve_download_expires_ts(job_state)
             if expires_ts is None or expires_ts > now_ts:
                 continue
@@ -632,7 +638,7 @@ class OrchestratorServer:
             job_id = str(job_state.get("job_id", "unknown"))
             paths_to_delete: list[Path] = []
             seen_paths: set[str] = set()
-            for key in ("output_json", "output_gz", "output_worker_log"):
+            for key in artifact_keys:
                 raw_path = str(job_state.get(key, "")).strip()
                 if not raw_path or raw_path in seen_paths:
                     continue
