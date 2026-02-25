@@ -149,7 +149,20 @@ class PerekrestokCatalogMixin:
             return None
         if "%s" not in template:
             return template
-        return template.replace("%s", "1300x1300")
+
+        width = node.get("width")
+        height = node.get("height")
+        if (
+            isinstance(width, int)
+            and not isinstance(width, bool)
+            and width > 0
+            and isinstance(height, int)
+            and not isinstance(height, bool)
+            and height > 0
+        ):
+            return template.replace("%s", f"{width}x{height}")
+
+        return None
 
     async def _collect_product_images_for_payload(
         self,
