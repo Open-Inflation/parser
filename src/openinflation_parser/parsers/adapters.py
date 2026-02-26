@@ -16,6 +16,7 @@ class ParserRunSettings:
     timeout_ms: float
     include_images: bool
     strict_validation: bool
+    image_cache_dir: str | None = None
 
 
 class ParserAdapter(Protocol):
@@ -58,6 +59,7 @@ class FixPriceAdapter:
             timeout_ms=settings.timeout_ms,
             include_images=settings.include_images,
             strict_validation=settings.strict_validation,
+            image_cache_dir=settings.image_cache_dir,
         )
         return FixPriceParser(config)
 
@@ -82,6 +84,7 @@ class ChizhikAdapter:
             timeout_ms=settings.timeout_ms,
             include_images=settings.include_images,
             strict_validation=settings.strict_validation,
+            image_cache_dir=settings.image_cache_dir,
         )
         return ChizhikParser(config)
 
@@ -119,6 +122,7 @@ class PerekrestokAdapter:
             timeout_ms=settings.timeout_ms,
             include_images=settings.include_images,
             strict_validation=settings.strict_validation,
+            image_cache_dir=settings.image_cache_dir,
         )
         return PerekrestokParser(config)
 

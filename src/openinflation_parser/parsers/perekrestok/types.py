@@ -19,6 +19,7 @@ class PerekrestokParserConfig:
     include_images: bool = False
     image_limit_per_product: int = 1
     strict_validation: bool = False
+    image_cache_dir: str | None = None
     city_search: str = "а"
     city_search_limit: int = 200
     shops_page_size: int = 100

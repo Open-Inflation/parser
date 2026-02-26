@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import base64
+import hashlib
 import logging
+from pathlib import Path
 from typing import Any
 
 
@@ -50,6 +51,71 @@ class ParserRuntimeMixin:
             return "html-fragment"
         return "unknown-content"
 
+    @staticmethod
+    def _safe_path_token(value: Any, *, fallback: str = "item") -> str:
+        if isinstance(value, bytes):
+            try:
+                value = value.decode("utf-8", errors="ignore")
+            except Exception:
+                value = ""
+        token = str(value).strip().lower() if value is not None else ""
+        if not token:
+            return fallback
+        prepared = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in token)
+        prepared = prepared.strip("_")
+        if not prepared:
+            return fallback
+        return prepared[:64]
+
+    def _image_cache_root(self) -> Path | None:
+        image_cache_dir = self._safe_non_empty_str(getattr(self.config, "image_cache_dir", None))
+        if image_cache_dir is None:
+            return None
+        root = Path(image_cache_dir).expanduser().resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    @classmethod
+    def _image_subject_token(cls, *, product: dict[str, Any]) -> str:
+        for key in ("sku", "plu", "id", "uid", "code", "slug", "alias"):
+            token = cls._safe_non_empty_str(product.get(key))
+            if token is not None:
+                return cls._safe_path_token(token, fallback="product")
+            raw = product.get(key)
+            if isinstance(raw, int) and not isinstance(raw, bool):
+                return cls._safe_path_token(raw, fallback="product")
+        return "product"
+
+    def _persist_image_payload(
+        self,
+        *,
+        product: dict[str, Any],
+        source_url: str,
+        payload: bytes,
+        extension: str,
+        role: str,
+        ordinal: int,
+    ) -> str | None:
+        root = self._image_cache_root()
+        if root is None:
+            LOGGER.warning(
+                "Image cache dir is not configured, dropping image payload: role=%s url=%s",
+                role,
+                source_url,
+            )
+            return None
+
+        role_token = self._safe_path_token(role, fallback="image")
+        subject_token = self._image_subject_token(product=product)
+        source_hash = hashlib.sha1(source_url.encode("utf-8")).hexdigest()[:16]
+        relative = Path("images") / subject_token / (
+            f"{role_token}_{max(1, ordinal):03d}_{source_hash}.{extension}"
+        )
+        destination = root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(payload)
+        return relative.as_posix()
+
     @classmethod
     def _merge_categories_uid(cls, *groups: list[str] | None) -> list[str] | None:
         prepared: list[str] = []
@@ -71,7 +137,7 @@ class ParserRuntimeMixin:
         api: Any,
         url: str,
         include_images: bool,
-    ) -> str | None:
+    ) -> tuple[bytes, str] | None:
         if not include_images:
             return None
         try:
@@ -100,9 +166,7 @@ class ParserRuntimeMixin:
                 len(payload),
             )
             return None
-
-        encoded = base64.b64encode(payload).decode("ascii")
-        return f"{INLINE_IMAGE_TOKEN_PREFIX}{extension}:{encoded}"
+        return payload, extension
 
     @classmethod
     def _extract_image_urls(
@@ -166,14 +230,35 @@ class ParserRuntimeMixin:
             url=urls[0],
             include_images=include_images,
         )
+        main_path: str | None = None
+        if main is not None:
+            main_payload, main_ext = main
+            main_path = self._persist_image_payload(
+                product=product,
+                source_url=urls[0],
+                payload=main_payload,
+                extension=main_ext,
+                role="main",
+                ordinal=1,
+            )
         gallery: list[str] = []
         safe_limit = max(0, image_limit)
-        for url in urls[1 : 1 + safe_limit]:
+        for index, url in enumerate(urls[1 : 1 + safe_limit], start=1):
             image = await self._download_image_if_needed(
                 api=api,
                 url=url,
                 include_images=include_images,
             )
             if image is not None:
-                gallery.append(image)
-        return main, (gallery or None)
+                payload, extension = image
+                image_path = self._persist_image_payload(
+                    product=product,
+                    source_url=url,
+                    payload=payload,
+                    extension=extension,
+                    role="gallery",
+                    ordinal=index,
+                )
+                if image_path is not None:
+                    gallery.append(image_path)
+        return main_path, (gallery or None)

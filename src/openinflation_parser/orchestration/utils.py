@@ -237,6 +237,7 @@ def write_store_bundle(
     output_dir: str,
     store_code: str,
     worker_log_path: str | None = None,
+    prepared_images_dir: str | None = None,
 ) -> tuple[str, str]:
     out_dir = Path(output_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -255,14 +256,30 @@ def write_store_bundle(
     images_written = 0
     worker_log_included = False
     bundled_worker_log_path = bundle_dir / "worker.log"
-    products = getattr(store, "products", None)
-    if isinstance(products, list):
-        for index, card in enumerate(products, start=1):
-            images_written += _materialize_card_images(
-                card,
-                card_index=index,
-                bundle_dir=bundle_dir,
+    prepared_images_root: Path | None = None
+    if prepared_images_dir is not None:
+        candidate = Path(prepared_images_dir).expanduser().resolve()
+        if candidate.is_dir():
+            prepared_images_root = candidate
+        else:
+            LOGGER.warning(
+                "Prepared images dir is missing or invalid, fallback to inline token materialization: %s",
+                candidate,
             )
+
+    if prepared_images_root is not None:
+        images_dir = bundle_dir / "images"
+        shutil.copytree(prepared_images_root, images_dir, dirs_exist_ok=True)
+        images_written = sum(1 for path in images_dir.rglob("*") if path.is_file())
+    else:
+        products = getattr(store, "products", None)
+        if isinstance(products, list):
+            for index, card in enumerate(products, start=1):
+                images_written += _materialize_card_images(
+                    card,
+                    card_index=index,
+                    bundle_dir=bundle_dir,
+                )
 
     if worker_log_path is not None:
         source_worker_log = Path(worker_log_path).expanduser()

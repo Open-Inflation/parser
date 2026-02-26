@@ -32,6 +32,7 @@ class FixPriceParserConfig:
     include_images: bool = False
     image_limit_per_product: int = 1
     strict_validation: bool = False
+    image_cache_dir: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

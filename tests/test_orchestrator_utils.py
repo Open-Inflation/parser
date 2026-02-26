@@ -318,3 +318,94 @@ def test_write_store_bundle_drops_invalid_inline_image_tokens(tmp_path: Path) ->
     with tarfile.open(archive_path, "r:gz") as archive:
         names = set(archive.getnames())
         assert names == {"meta.json"}
+
+
+def test_write_store_bundle_uses_prepared_images_dir(tmp_path: Path) -> None:
+    schedule = Schedule.model_construct(open_from=None, closed_from=None)
+    administrative_unit = AdministrativeUnit.model_construct(
+        settlement_type=None,
+        name="Москва",
+        alias="moskva",
+        country="RUS",
+        region=None,
+        longitude=None,
+        latitude=None,
+    )
+    card = Card.model_construct(
+        sku="sku-3",
+        plu="plu-3",
+        source_page_url=None,
+        title="Product 3",
+        description=None,
+        adult=None,
+        new=None,
+        promo=None,
+        season=None,
+        hit=None,
+        data_matrix=None,
+        brand=None,
+        producer_name=None,
+        producer_country=None,
+        composition=None,
+        meta_data=None,
+        expiration_date_in_days=None,
+        rating=None,
+        reviews_count=None,
+        price=None,
+        discount_price=None,
+        loyal_price=None,
+        wholesale_price=None,
+        price_unit=None,
+        unit=None,
+        available_count=None,
+        package_quantity=None,
+        package_unit=None,
+        categories_uid=None,
+        main_image="images/sku-3/main_001_deadbeefdeadbeef.jpg",
+        images=["images/sku-3/gallery_001_feedfacefeedface.png"],
+    )
+    store = RetailUnit.model_construct(
+        retail_type=None,
+        code="C003",
+        address=None,
+        schedule_weekdays=schedule,
+        schedule_saturday=schedule,
+        schedule_sunday=schedule,
+        temporarily_closed=None,
+        longitude=None,
+        latitude=None,
+        administrative_unit=administrative_unit,
+        categories=None,
+        products=[card],
+    )
+
+    prepared_images_root = tmp_path / "prepared" / "images" / "sku-3"
+    prepared_images_root.mkdir(parents=True, exist_ok=True)
+    (prepared_images_root / "main_001_deadbeefdeadbeef.jpg").write_bytes(b"\xff\xd8\xffprepared-main")
+    (prepared_images_root / "gallery_001_feedfacefeedface.png").write_bytes(
+        b"\x89PNG\r\n\x1a\nprepared-gallery"
+    )
+
+    json_path, archive_path = write_store_bundle(
+        store,
+        output_dir=str(tmp_path),
+        store_code="C003",
+        prepared_images_dir=str((tmp_path / "prepared" / "images")),
+    )
+
+    payload = json.loads(Path(json_path).read_text(encoding="utf-8"))
+    product = payload["products"][0]
+    assert product["main_image"] == "images/sku-3/main_001_deadbeefdeadbeef.jpg"
+    assert product["images"] == ["images/sku-3/gallery_001_feedfacefeedface.png"]
+
+    with tarfile.open(archive_path, "r:gz") as archive:
+        names = set(archive.getnames())
+        assert "meta.json" in names
+        assert "images/sku-3/main_001_deadbeefdeadbeef.jpg" in names
+        assert "images/sku-3/gallery_001_feedfacefeedface.png" in names
+        main_payload = archive.extractfile("images/sku-3/main_001_deadbeefdeadbeef.jpg")
+        gallery_payload = archive.extractfile("images/sku-3/gallery_001_feedfacefeedface.png")
+        assert main_payload is not None
+        assert gallery_payload is not None
+        assert main_payload.read() == b"\xff\xd8\xffprepared-main"
+        assert gallery_payload.read() == b"\x89PNG\r\n\x1a\nprepared-gallery"
