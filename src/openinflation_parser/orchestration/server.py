@@ -800,25 +800,41 @@ class OrchestratorServer:
             if status not in {"running", "queued"}:
                 continue
 
+            job_id = str(job_state.get("job_id", "unknown"))
             worker_id = self._worker_id_from_value(job_state.get("worker_id"))
-            if worker_id is None or worker_alive.get(worker_id, False):
+            reason: str | None = None
+            if worker_id is None:
+                if status == "queued" and any(item.job_id == job_id for item in self._pending_jobs):
+                    continue
+                reason = "worker_id is missing"
+            elif not worker_alive.get(worker_id, False):
+                reason = f"worker_id={worker_id} is not alive"
+            else:
+                slot_job_id = self._worker_current_job.get(worker_id)
+                if slot_job_id != job_id:
+                    reason = (
+                        f"worker_id={worker_id} currently assigned to "
+                        f"{slot_job_id or 'none'}"
+                    )
+
+            if reason is None:
                 continue
 
-            job_id = str(job_state.get("job_id", "unknown"))
             worker_label = str(worker_id) if worker_id is not None else "unknown"
             job_state["status"] = "error"
             job_state["finished_at"] = utc_now_iso()
             job_state["message"] = (
-                "Worker process stopped before reporting job completion "
-                f"(worker_id={worker_label})."
+                "Job reconciled as orphaned by orchestrator heartbeat "
+                f"({reason})."
             )
             self._job_store.upsert(job_state)
             self._release_worker_slot_for_job(job_id=job_id, worker_id=worker_id)
             reconciled += 1
             LOGGER.warning(
-                "Job %s marked as error due to missing worker heartbeat: worker_id=%s",
+                "Job %s marked as error by reconcile: worker_id=%s reason=%s",
                 job_id,
                 worker_label,
+                reason,
             )
         return reconciled
 
@@ -1305,6 +1321,13 @@ class OrchestratorServer:
             self.start_workers()
             self._collector_task = asyncio.create_task(self._collect_results())
             self._heartbeat_task = asyncio.create_task(self._log_heartbeat())
+            startup_reconciled = self._reconcile_orphaned_running_jobs()
+            if startup_reconciled > 0:
+                LOGGER.warning(
+                    "Startup reconcile marked orphaned jobs as error: count=%s",
+                    startup_reconciled,
+                )
+                await self._try_dispatch_jobs()
 
             if bootstrap_store_code:
                 await self._enqueue_job(

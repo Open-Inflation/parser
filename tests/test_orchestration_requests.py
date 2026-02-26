@@ -208,8 +208,82 @@ def test_reconcile_orphaned_running_jobs_marks_error() -> None:
     job = server._job_store.get("job-1")
     assert job is not None
     assert job["status"] == "error"
-    assert "Worker process stopped before reporting job completion" in str(job.get("message", ""))
+    assert "orphaned" in str(job.get("message", "")).lower()
     assert job.get("finished_at") is not None
+
+
+def test_reconcile_marks_running_job_error_when_worker_slot_points_to_another_job() -> None:
+    defaults = _job_defaults()
+    server = OrchestratorServer(
+        host="127.0.0.1",
+        port=8765,
+        worker_count=1,
+        proxies=[],
+        defaults=defaults,
+        jobs_db_path=None,
+    )
+
+    class _AliveProcess:
+        pid = 333
+
+        @staticmethod
+        def is_alive() -> bool:
+            return True
+
+    server._workers = [_AliveProcess()]  # type: ignore[assignment]
+    server._worker_current_job = {1: None}
+    server._worker_busy = {1: False}
+    server._job_store.upsert(
+        {
+            "job_id": "job-running-stale",
+            "status": "running",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "started_at": "2026-01-01T00:00:10+00:00",
+            "worker_id": 1,
+        }
+    )
+
+    reconciled = server._reconcile_orphaned_running_jobs()
+    assert reconciled == 1
+    job = server._job_store.get("job-running-stale")
+    assert job is not None
+    assert job["status"] == "error"
+
+
+def test_reconcile_marks_queued_job_error_when_not_in_pending_queue() -> None:
+    defaults = _job_defaults()
+    server = OrchestratorServer(
+        host="127.0.0.1",
+        port=8765,
+        worker_count=1,
+        proxies=[],
+        defaults=defaults,
+        jobs_db_path=None,
+    )
+
+    class _AliveProcess:
+        pid = 334
+
+        @staticmethod
+        def is_alive() -> bool:
+            return True
+
+    server._workers = [_AliveProcess()]  # type: ignore[assignment]
+    server._worker_current_job = {1: None}
+    server._worker_busy = {1: False}
+    server._job_store.upsert(
+        {
+            "job_id": "job-queued-stale",
+            "status": "queued",
+            "created_at": "2026-01-01T00:00:00+00:00",
+        }
+    )
+
+    reconciled = server._reconcile_orphaned_running_jobs()
+    assert reconciled == 1
+    job = server._job_store.get("job-queued-stale")
+    assert job is not None
+    assert job["status"] == "error"
 
 
 def test_reconcile_worker_slots_clears_stale_slot_and_restarts(monkeypatch: pytest.MonkeyPatch) -> None:
