@@ -212,6 +212,78 @@ def test_reconcile_orphaned_running_jobs_marks_error() -> None:
     assert job.get("finished_at") is not None
 
 
+def test_reconcile_worker_slots_clears_stale_slot_and_restarts(monkeypatch: pytest.MonkeyPatch) -> None:
+    defaults = _job_defaults()
+    server = OrchestratorServer(
+        host="127.0.0.1",
+        port=8765,
+        worker_count=1,
+        proxies=[],
+        defaults=defaults,
+        jobs_db_path=None,
+    )
+
+    class _DeadProcess:
+        pid = 2001
+
+        @staticmethod
+        def is_alive() -> bool:
+            return False
+
+    class _AliveProcess:
+        pid = 2002
+
+        @staticmethod
+        def is_alive() -> bool:
+            return True
+
+    server._workers = [_DeadProcess()]  # type: ignore[assignment]
+    server._worker_busy = {1: True}
+    server._worker_current_job = {1: "job-stale"}
+    server._job_store.upsert(
+        {
+            "job_id": "job-stale",
+            "status": "success",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "finished_at": "2026-01-01T00:01:00+00:00",
+            "worker_id": 1,
+        }
+    )
+
+    restart_calls: list[tuple[int, bool]] = []
+
+    def _fake_spawn_worker(worker_id: int, *, replace: bool) -> None:
+        restart_calls.append((worker_id, replace))
+        server._workers[worker_id - 1] = _AliveProcess()  # type: ignore[index]
+
+    monkeypatch.setattr(server, "_spawn_worker", _fake_spawn_worker)
+
+    normalized, restarted = server._reconcile_worker_slots()
+    assert normalized == 1
+    assert restarted == 1
+    assert restart_calls == [(1, True)]
+    assert server._worker_busy[1] is False
+    assert server._worker_current_job[1] is None
+
+
+def test_release_worker_slot_falls_back_when_worker_id_mismatch() -> None:
+    defaults = _job_defaults()
+    server = OrchestratorServer(
+        host="127.0.0.1",
+        port=8765,
+        worker_count=2,
+        proxies=[],
+        defaults=defaults,
+        jobs_db_path=None,
+    )
+    server._worker_busy = {1: True, 2: False}
+    server._worker_current_job = {1: "job-1", 2: None}
+
+    server._release_worker_slot_for_job(job_id="job-1", worker_id=2)
+    assert server._worker_busy[1] is False
+    assert server._worker_current_job[1] is None
+
+
 def test_run_calls_stop_when_bootstrap_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     defaults = _job_defaults()
     server = OrchestratorServer(

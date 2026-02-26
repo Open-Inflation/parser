@@ -732,13 +732,13 @@ class OrchestratorServer:
             self._worker_busy[worker_id] = False
             if self._worker_current_job.get(worker_id) == job_id:
                 self._worker_current_job[worker_id] = None
-            return
+                return
 
         for candidate_worker_id, current_job_id in self._worker_current_job.items():
             if current_job_id == job_id:
                 self._worker_busy[candidate_worker_id] = False
                 self._worker_current_job[candidate_worker_id] = None
-                break
+                return
 
     def _can_dispatch_job_to_worker(self, *, job: WorkerJob, worker_id: int) -> bool:
         if self._worker_busy.get(worker_id, False):
@@ -821,6 +821,50 @@ class OrchestratorServer:
                 worker_label,
             )
         return reconciled
+
+    def _reconcile_worker_slots(self) -> tuple[int, int]:
+        normalized = 0
+        restarted = 0
+        for worker_id, process in enumerate(self._workers, start=1):
+            busy = bool(self._worker_busy.get(worker_id, False))
+            current_job_id = self._worker_current_job.get(worker_id)
+
+            if current_job_id is not None:
+                job_state = self._job_store.get(current_job_id)
+                job_status = str(job_state.get("status", "")).strip().lower() if job_state else "missing"
+                if job_state is None or job_status not in {"queued", "running"}:
+                    LOGGER.warning(
+                        "Clearing stale worker slot: worker=%s pid=%s alive=%s job_id=%s job_status=%s",
+                        worker_id,
+                        process.pid,
+                        process.is_alive(),
+                        current_job_id,
+                        job_status,
+                    )
+                    self._release_worker_slot_for_job(job_id=current_job_id, worker_id=worker_id)
+                    normalized += 1
+                    busy = False
+                    current_job_id = None
+
+            if current_job_id is None and busy:
+                self._worker_busy[worker_id] = False
+                normalized += 1
+                LOGGER.warning(
+                    "Clearing inconsistent worker busy flag: worker=%s pid=%s alive=%s",
+                    worker_id,
+                    process.pid,
+                    process.is_alive(),
+                )
+
+            if (
+                not process.is_alive()
+                and self._worker_current_job.get(worker_id) is None
+                and not self._worker_busy.get(worker_id, False)
+            ):
+                if self._ensure_worker_alive(worker_id):
+                    restarted += 1
+
+        return normalized, restarted
 
     async def _collect_results(self) -> None:
         while True:
@@ -992,18 +1036,21 @@ class OrchestratorServer:
     async def _log_heartbeat(self) -> None:
         while not self._stop_event.is_set():
             await asyncio.sleep(15.0)
-            reconciled = self._reconcile_orphaned_running_jobs()
-            if reconciled > 0:
+            reconciled_jobs = self._reconcile_orphaned_running_jobs()
+            normalized_slots, restarted_workers = self._reconcile_worker_slots()
+            if reconciled_jobs > 0 or normalized_slots > 0 or restarted_workers > 0:
                 await self._try_dispatch_jobs()
             cleaned = self._cleanup_expired_download_artifacts()
             pruned = self._job_store.prune()
             summary = self._job_store.summary()
             LOGGER.debug(
-                "Heartbeat: workers=%s jobs_total=%s jobs_by_status=%s reconciled=%s cleaned=%s pruned=%s",
+                "Heartbeat: workers=%s jobs_total=%s jobs_by_status=%s reconciled_jobs=%s normalized_slots=%s restarted_workers=%s cleaned=%s pruned=%s",
                 len(self._workers),
                 summary["jobs_total"],
                 summary["jobs_by_status"],
-                reconciled,
+                reconciled_jobs,
+                normalized_slots,
+                restarted_workers,
                 cleaned,
                 pruned,
             )
@@ -1105,14 +1152,29 @@ class OrchestratorServer:
     def _workers_status(self) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         for idx, process in enumerate(self._workers):
+            worker_id = idx + 1
+            alive = process.is_alive()
+            busy = bool(self._worker_busy.get(worker_id, False))
+            job_id = self._worker_current_job.get(worker_id)
+            if alive and busy and job_id:
+                state = "running"
+            elif alive and not busy and job_id is None:
+                state = "idle"
+            elif not alive and (busy or job_id):
+                state = "stale"
+            elif not alive:
+                state = "dead"
+            else:
+                state = "unknown"
             rows.append(
                 {
-                    "index": idx + 1,
+                    "index": worker_id,
                     "pid": process.pid,
-                    "alive": process.is_alive(),
+                    "alive": alive,
                     "proxy": self._worker_proxy(idx),
-                    "busy": self._worker_busy.get(idx + 1, False),
-                    "job_id": self._worker_current_job.get(idx + 1),
+                    "busy": busy,
+                    "job_id": job_id,
+                    "state": state,
                 }
             )
         return rows
