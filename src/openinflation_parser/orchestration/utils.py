@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import base64
 import binascii
 import gzip
@@ -8,29 +9,209 @@ import os
 import re
 import shutil
 import tarfile
+from contextvars import ContextVar, Token
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from openinflation_dataclass import to_json
 
+from .. import __version__
 from ..parsers.runtime import INLINE_IMAGE_TOKEN_PREFIX
+
+try:
+    from opentelemetry import trace as otel_trace  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    otel_trace = None
 
 
 LOGGER = logging.getLogger(__name__)
 _INLINE_IMAGE_EXT_RE = re.compile(r"^[a-z0-9]{2,8}$")
+LOG_FORMAT = (
+    "%(asctime)s | %(levelname)s | svc=%(service_name)s | role=%(entity_type)s "
+    "| pid=%(process)d(%(processName)s) | worker=%(worker_id)s | job=%(job_id)s "
+    "| store=%(store_code)s | parser=%(parser_name)s | trace=%(otel_trace_id)s "
+    "span=%(otel_span_id)s | %(name)s | %(message)s"
+)
+DEFAULT_ORCHESTRATOR_SERVICE_NAME = "openinflation-orchestrator"
+DEFAULT_WORKER_SERVICE_NAME = "openinflation-worker"
+_LOG_CONTEXT: ContextVar[dict[str, str]] = ContextVar("openinflation_log_context", default={})
+_UPTRACE_IS_CONFIGURED = False
 
 
-def setup_logging(level: str) -> int:
+class _ObservabilityContextFilter(logging.Filter):
+    def __init__(self, *, service_name: str, entity_type: str, worker_id: int | None):
+        super().__init__()
+        self._service_name = service_name
+        self._entity_type = entity_type
+        self._worker_id = "-" if worker_id is None else str(worker_id)
+
+    @staticmethod
+    def _trace_attrs() -> tuple[str, str]:
+        if otel_trace is None:
+            return "-", "-"
+        span = otel_trace.get_current_span()
+        if span is None:
+            return "-", "-"
+        span_context = span.get_span_context()
+        if span_context is None or not span_context.is_valid:
+            return "-", "-"
+        return f"{span_context.trace_id:032x}", f"{span_context.span_id:016x}"
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        context = _LOG_CONTEXT.get()
+        record.service_name = context.get("service_name", self._service_name)
+        record.entity_type = context.get("entity_type", self._entity_type)
+        record.worker_id = context.get("worker_id", self._worker_id)
+        record.job_id = context.get("job_id", "-")
+        record.store_code = context.get("store_code", "-")
+        record.parser_name = context.get("parser_name", "-")
+        trace_id, span_id = self._trace_attrs()
+        record.otel_trace_id = trace_id
+        record.otel_span_id = span_id
+        return True
+
+
+def set_log_context(**values: Any) -> Token[dict[str, str]]:
+    context = dict(_LOG_CONTEXT.get())
+    for key, value in values.items():
+        if value is None:
+            context.pop(key, None)
+        else:
+            context[key] = str(value)
+    return _LOG_CONTEXT.set(context)
+
+
+def reset_log_context(token: Token[dict[str, str]]) -> None:
+    _LOG_CONTEXT.reset(token)
+
+
+def _mask_uptrace_dsn(dsn: str) -> str:
+    if "@" not in dsn:
+        return "***"
+    prefix, suffix = dsn.split("@", 1)
+    visible_prefix = prefix[: min(6, len(prefix))]
+    return f"{visible_prefix}***@{suffix}"
+
+
+def setup_logging(
+    level: str,
+    *,
+    service_name: str = DEFAULT_ORCHESTRATOR_SERVICE_NAME,
+    entity_type: str = "orchestrator",
+    worker_id: int | None = None,
+) -> int:
     numeric_level = getattr(logging, level.upper(), logging.INFO)
     logging.basicConfig(
         level=numeric_level,
-        format="%(asctime)s | %(levelname)s | %(processName)s | %(name)s | %(message)s",
+        format=LOG_FORMAT,
+        force=True,
+    )
+    root_logger = logging.getLogger()
+    for existing_filter in list(root_logger.filters):
+        if isinstance(existing_filter, _ObservabilityContextFilter):
+            root_logger.removeFilter(existing_filter)
+    root_logger.addFilter(
+        _ObservabilityContextFilter(
+            service_name=service_name,
+            entity_type=entity_type,
+            worker_id=worker_id,
+        )
     )
     # Keep third-party retry internals from flooding DEBUG logs for every request.
     third_party_level = max(logging.INFO, numeric_level)
     logging.getLogger("aiohttp_retry").setLevel(third_party_level)
     return int(numeric_level)
+
+
+def setup_uptrace(
+    *,
+    service_name: str,
+    entity_type: str,
+    dsn: str | None = None,
+    deployment_environment: str | None = None,
+    worker_id: int | None = None,
+) -> bool:
+    global _UPTRACE_IS_CONFIGURED
+    if _UPTRACE_IS_CONFIGURED:
+        return True
+
+    resolved_dsn = (dsn or os.environ.get("UPTRACE_DSN") or "").strip()
+    if not resolved_dsn:
+        LOGGER.debug("Uptrace DSN is not configured, telemetry disabled for service=%s", service_name)
+        return False
+
+    try:
+        import uptrace
+    except ModuleNotFoundError:
+        LOGGER.warning(
+            "UPTRACE_DSN is set, but package 'uptrace' is missing. "
+            "Install dependencies to enable telemetry for service=%s",
+            service_name,
+        )
+        return False
+
+    resolved_environment = (
+        deployment_environment
+        or os.environ.get("UPTRACE_DEPLOYMENT_ENV")
+        or os.environ.get("ENVIRONMENT")
+        or "dev"
+    )
+    resource_attributes: dict[str, Any] = {"app.entity_type": entity_type}
+    if worker_id is not None:
+        resource_attributes["app.worker_id"] = str(worker_id)
+
+    base_configure_kwargs: dict[str, Any] = {
+        "dsn": resolved_dsn,
+        "service_name": service_name,
+        "service_version": __version__,
+        "deployment_environment": resolved_environment,
+        "resource_attributes": resource_attributes,
+    }
+    configure_attempts = [
+        dict(base_configure_kwargs),
+        {
+            key: value
+            for key, value in base_configure_kwargs.items()
+            if key != "resource_attributes"
+        },
+        {
+            key: value
+            for key, value in base_configure_kwargs.items()
+            if key not in {"resource_attributes", "deployment_environment"}
+        },
+        {"dsn": resolved_dsn, "service_name": service_name},
+    ]
+    last_type_error: TypeError | None = None
+    for configure_kwargs in configure_attempts:
+        try:
+            uptrace.configure_opentelemetry(**configure_kwargs)
+            _UPTRACE_IS_CONFIGURED = True
+            break
+        except TypeError as exc:
+            last_type_error = exc
+        except Exception:
+            LOGGER.exception("Uptrace setup failed for service=%s", service_name)
+            return False
+    if not _UPTRACE_IS_CONFIGURED:
+        if last_type_error is not None:
+            LOGGER.warning(
+                "Uptrace setup failed for service=%s because of unsupported API signature: %s",
+                service_name,
+                last_type_error,
+            )
+        return False
+
+    if hasattr(uptrace, "shutdown"):
+        atexit.register(uptrace.shutdown)
+    LOGGER.info(
+        "Uptrace enabled: service=%s entity=%s env=%s dsn=%s",
+        service_name,
+        entity_type,
+        resolved_environment,
+        _mask_uptrace_dsn(resolved_dsn),
+    )
+    return True
 
 
 def require_websockets_module() -> Any:

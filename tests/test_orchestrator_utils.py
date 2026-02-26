@@ -1,14 +1,22 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
+import logging
 import tarfile
 from pathlib import Path
 
 from openinflation_dataclass import AdministrativeUnit, Card, RetailUnit, Schedule
 
 from openinflation_parser.orchestrator import choose_worker_count, load_proxy_list
-from openinflation_parser.orchestration.utils import write_store_bundle
+from openinflation_parser.orchestration.utils import (
+    LOG_FORMAT,
+    reset_log_context,
+    set_log_context,
+    setup_logging,
+    write_store_bundle,
+)
 from openinflation_parser.parsers import get_parser, get_parser_adapter
 from openinflation_parser.parsers.runtime import INLINE_IMAGE_TOKEN_PREFIX
 
@@ -21,6 +29,44 @@ def test_choose_worker_count_ram_only() -> None:
         max_workers=None,
     )
     assert workers == 4
+
+
+def test_setup_logging_adds_observability_fields() -> None:
+    setup_logging("INFO", service_name="svc-test", entity_type="orchestrator")
+    root_logger = logging.getLogger()
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    root_logger.addHandler(handler)
+    try:
+        logging.getLogger("test.observability").info("hello")
+    finally:
+        root_logger.removeHandler(handler)
+    output = stream.getvalue()
+    assert "svc=svc-test" in output
+    assert "role=orchestrator" in output
+    assert "worker=-" in output
+    assert "job=-" in output
+
+
+def test_set_log_context_overrides_job_fields() -> None:
+    setup_logging("INFO", service_name="svc-worker", entity_type="worker", worker_id=2)
+    root_logger = logging.getLogger()
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    root_logger.addHandler(handler)
+    token = set_log_context(job_id="job-1", store_code="C001", parser_name="fixprice")
+    try:
+        logging.getLogger("test.observability").info("run")
+    finally:
+        reset_log_context(token)
+        root_logger.removeHandler(handler)
+    output = stream.getvalue()
+    assert "worker=2" in output
+    assert "job=job-1" in output
+    assert "store=C001" in output
+    assert "parser=fixprice" in output
 
 
 def test_choose_worker_count_with_proxy_limit() -> None:

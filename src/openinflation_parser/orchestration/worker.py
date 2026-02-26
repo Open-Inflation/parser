@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import gc
 import logging
 import shutil
@@ -10,11 +11,25 @@ from typing import Any
 
 from ..parsers import ParserRunSettings, get_parser_adapter
 from .models import WorkerJob
-from .utils import safe_store_code, setup_logging, utc_now_iso, write_store_bundle
+from .utils import (
+    DEFAULT_WORKER_SERVICE_NAME,
+    LOG_FORMAT,
+    reset_log_context,
+    safe_store_code,
+    set_log_context,
+    setup_logging,
+    setup_uptrace,
+    utc_now_iso,
+    write_store_bundle,
+)
+
+try:
+    from opentelemetry import trace as otel_trace  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    otel_trace = None
 
 
 LOGGER = logging.getLogger(__name__)
-LOG_FORMAT = "%(asctime)s | %(levelname)s | %(processName)s | %(name)s | %(message)s"
 
 
 def _worker_job_log_path(*, job: WorkerJob, worker_id: int) -> Path:
@@ -177,6 +192,22 @@ async def execute_store_job(
         shutil.rmtree(image_cache_dir, ignore_errors=True)
 
 
+def _job_span_context(*, worker_id: int, job: WorkerJob) -> Any:
+    if otel_trace is None:
+        return contextlib.nullcontext()
+    tracer = otel_trace.get_tracer(__name__)
+    return tracer.start_as_current_span(
+        "worker.process_job",
+        attributes={
+            "app.entity_type": "worker",
+            "app.worker_id": str(worker_id),
+            "app.job_id": job.job_id,
+            "app.store_code": job.store_code,
+            "app.parser_name": job.parser_name,
+        },
+    )
+
+
 def worker_process_loop(
     worker_id: int,
     proxy: str | None,
@@ -184,130 +215,172 @@ def worker_process_loop(
     job_queue: Any,
     result_queue: Any,
     max_jobs_per_process: int = 1,
+    uptrace_dsn: str | None = None,
+    uptrace_service_name: str = DEFAULT_WORKER_SERVICE_NAME,
+    uptrace_environment: str | None = None,
 ) -> None:
-    setup_logging(log_level)
-    LOGGER.info("Worker %s booted (proxy=%s)", worker_id, proxy or "none")
+    setup_logging(
+        log_level,
+        service_name=uptrace_service_name,
+        entity_type="worker",
+        worker_id=worker_id,
+    )
+    uptrace_enabled = setup_uptrace(
+        service_name=uptrace_service_name,
+        entity_type="worker",
+        dsn=uptrace_dsn,
+        deployment_environment=uptrace_environment,
+        worker_id=worker_id,
+    )
+    worker_context_token = set_log_context(
+        service_name=uptrace_service_name,
+        entity_type="worker",
+        worker_id=worker_id,
+    )
+    LOGGER.info(
+        "Worker %s booted (proxy=%s uptrace_enabled=%s uptrace_service=%s)",
+        worker_id,
+        proxy or "none",
+        uptrace_enabled,
+        uptrace_service_name,
+    )
     jobs_processed = 0
 
-    while True:
-        payload = job_queue.get()
-        if payload is None:
-            LOGGER.info("Worker %s received stop signal", worker_id)
-            break
+    try:
+        while True:
+            payload = job_queue.get()
+            if payload is None:
+                LOGGER.info("Worker %s received stop signal", worker_id)
+                break
 
-        try:
-            job = WorkerJob.from_payload(payload)
-        except Exception as exc:  # pragma: no cover - defensive
-            LOGGER.exception("Worker %s received invalid job payload", worker_id)
-            result_queue.put(
-                {
-                    "event": "finished",
-                    "status": "error",
-                    "worker_id": worker_id,
-                    "job_id": str(payload.get("job_id", "unknown")),
-                    "timestamp": utc_now_iso(),
-                    "message": f"Invalid job payload: {exc}",
-                }
-            )
-            continue
-
-        worker_log_path: Path | None = None
-        worker_log_handler: logging.Handler | None = None
-        try:
-            worker_log_path, worker_log_handler = _attach_worker_job_log_handler(
-                job=job,
-                worker_id=worker_id,
-                log_level=log_level,
-            )
-            LOGGER.info(
-                "Worker %s job %s log file attached: %s",
-                worker_id,
-                job.job_id,
-                worker_log_path,
-            )
-        except Exception:
-            LOGGER.exception(
-                "Worker %s failed to initialize job log file for job %s",
-                worker_id,
-                job.job_id,
-            )
-        LOGGER.info(
-            "Worker %s picked job %s (store=%s worker_log=%s)",
-            worker_id,
-            job.job_id,
-            job.store_code,
-            worker_log_path if worker_log_path is not None else "none",
-        )
-        result_queue.put(
-            {
-                "event": "started",
-                "status": "running",
-                "worker_id": worker_id,
-                "job_id": job.job_id,
-                "timestamp": utc_now_iso(),
-                "output_worker_log": (
-                    str(worker_log_path) if worker_log_path is not None else None
-                ),
-            }
-        )
-
-        job_succeeded = False
-        try:
-            json_path, json_gz_path = asyncio.run(
-                execute_store_job(
-                    job,
-                    proxy=proxy,
-                    worker_id=worker_id,
-                    worker_log_path=str(worker_log_path) if worker_log_path is not None else None,
+            try:
+                job = WorkerJob.from_payload(payload)
+            except Exception as exc:  # pragma: no cover - defensive
+                LOGGER.exception("Worker %s received invalid job payload", worker_id)
+                result_queue.put(
+                    {
+                        "event": "finished",
+                        "status": "error",
+                        "worker_id": worker_id,
+                        "job_id": str(payload.get("job_id", "unknown")),
+                        "timestamp": utc_now_iso(),
+                        "message": f"Invalid job payload: {exc}",
+                    }
                 )
+                continue
+
+            job_context_token = set_log_context(
+                service_name=uptrace_service_name,
+                entity_type="worker",
+                worker_id=worker_id,
+                job_id=job.job_id,
+                store_code=job.store_code,
+                parser_name=job.parser_name,
+            )
+            worker_log_path: Path | None = None
+            worker_log_handler: logging.Handler | None = None
+            try:
+                worker_log_path, worker_log_handler = _attach_worker_job_log_handler(
+                    job=job,
+                    worker_id=worker_id,
+                    log_level=log_level,
+                )
+                LOGGER.info(
+                    "Worker %s job %s log file attached: %s",
+                    worker_id,
+                    job.job_id,
+                    worker_log_path,
+                )
+            except Exception:
+                LOGGER.exception(
+                    "Worker %s failed to initialize job log file for job %s",
+                    worker_id,
+                    job.job_id,
+                )
+            LOGGER.info(
+                "Worker %s picked job %s (store=%s worker_log=%s)",
+                worker_id,
+                job.job_id,
+                job.store_code,
+                worker_log_path if worker_log_path is not None else "none",
             )
             result_queue.put(
                 {
-                    "event": "finished",
-                    "status": "success",
+                    "event": "started",
+                    "status": "running",
                     "worker_id": worker_id,
                     "job_id": job.job_id,
                     "timestamp": utc_now_iso(),
-                    "output_json": json_path,
-                    "output_gz": json_gz_path,
                     "output_worker_log": (
                         str(worker_log_path) if worker_log_path is not None else None
                     ),
                 }
             )
-            job_succeeded = True
-        except Exception as exc:
-            LOGGER.exception("Worker %s failed job %s: %s", worker_id, job.job_id, exc)
-            result_queue.put(
-                {
-                    "event": "finished",
-                    "status": "error",
-                    "worker_id": worker_id,
-                    "job_id": job.job_id,
-                    "timestamp": utc_now_iso(),
-                    "message": str(exc),
-                    "traceback": traceback.format_exc(),
-                }
-            )
-        finally:
-            if worker_log_handler is not None:
-                _detach_worker_job_log_handler(worker_log_handler)
-            if not job_succeeded and worker_log_path is not None:
-                try:
-                    worker_log_path.unlink(missing_ok=True)
-                except Exception:
-                    LOGGER.exception(
-                        "Worker %s failed to cleanup log file for failed job %s: %s",
-                        worker_id,
-                        job.job_id,
-                        worker_log_path,
+
+            job_succeeded = False
+            should_exit_after_job = False
+            try:
+                with _job_span_context(worker_id=worker_id, job=job):
+                    json_path, json_gz_path = asyncio.run(
+                        execute_store_job(
+                            job,
+                            proxy=proxy,
+                            worker_id=worker_id,
+                            worker_log_path=str(worker_log_path) if worker_log_path is not None else None,
+                        )
                     )
-            jobs_processed += 1
-            gc.collect()
-            if jobs_processed >= max(1, int(max_jobs_per_process)):
-                LOGGER.info(
-                    "Worker %s reached max_jobs_per_process=%s and will exit for recycle",
-                    worker_id,
-                    max_jobs_per_process,
+                result_queue.put(
+                    {
+                        "event": "finished",
+                        "status": "success",
+                        "worker_id": worker_id,
+                        "job_id": job.job_id,
+                        "timestamp": utc_now_iso(),
+                        "output_json": json_path,
+                        "output_gz": json_gz_path,
+                        "output_worker_log": (
+                            str(worker_log_path) if worker_log_path is not None else None
+                        ),
+                    }
                 )
+                job_succeeded = True
+            except Exception as exc:
+                LOGGER.exception("Worker %s failed job %s: %s", worker_id, job.job_id, exc)
+                result_queue.put(
+                    {
+                        "event": "finished",
+                        "status": "error",
+                        "worker_id": worker_id,
+                        "job_id": job.job_id,
+                        "timestamp": utc_now_iso(),
+                        "message": str(exc),
+                        "traceback": traceback.format_exc(),
+                    }
+                )
+            finally:
+                if worker_log_handler is not None:
+                    _detach_worker_job_log_handler(worker_log_handler)
+                if not job_succeeded and worker_log_path is not None:
+                    try:
+                        worker_log_path.unlink(missing_ok=True)
+                    except Exception:
+                        LOGGER.exception(
+                            "Worker %s failed to cleanup log file for failed job %s: %s",
+                            worker_id,
+                            job.job_id,
+                            worker_log_path,
+                        )
+                jobs_processed += 1
+                gc.collect()
+                if jobs_processed >= max(1, int(max_jobs_per_process)):
+                    LOGGER.info(
+                        "Worker %s reached max_jobs_per_process=%s and will exit for recycle",
+                        worker_id,
+                        max_jobs_per_process,
+                    )
+                    should_exit_after_job = True
+                reset_log_context(job_context_token)
+            if should_exit_after_job:
                 break
+    finally:
+        reset_log_context(worker_context_token)

@@ -9,7 +9,15 @@ from pathlib import Path
 from ..parsers import PARSER_REGISTRY
 from .models import JobDefaults, normalize_city_id
 from .server import OrchestratorServer
-from .utils import detect_available_ram_gb, load_proxy_list, setup_logging, choose_worker_count
+from .utils import (
+    DEFAULT_ORCHESTRATOR_SERVICE_NAME,
+    DEFAULT_WORKER_SERVICE_NAME,
+    choose_worker_count,
+    detect_available_ram_gb,
+    load_proxy_list,
+    setup_logging,
+    setup_uptrace,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -163,11 +171,41 @@ def build_arg_parser() -> argparse.ArgumentParser:
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Application log level.",
     )
+    parser.add_argument(
+        "--uptrace-dsn",
+        default=None,
+        help="Uptrace DSN. If omitted, UPTRACE_DSN env var is used.",
+    )
+    parser.add_argument(
+        "--uptrace-env",
+        default=None,
+        help="Deployment environment for Uptrace (for example: dev/stage/prod).",
+    )
+    parser.add_argument(
+        "--uptrace-orchestrator-service-name",
+        default=DEFAULT_ORCHESTRATOR_SERVICE_NAME,
+        help="Service name for orchestrator in Uptrace.",
+    )
+    parser.add_argument(
+        "--uptrace-worker-service-name",
+        default=DEFAULT_WORKER_SERVICE_NAME,
+        help="Service name for workers in Uptrace.",
+    )
     return parser
 
 
 async def run_orchestrator(args: argparse.Namespace) -> None:
-    setup_logging(args.log_level)
+    setup_logging(
+        args.log_level,
+        service_name=args.uptrace_orchestrator_service_name,
+        entity_type="orchestrator",
+    )
+    uptrace_enabled = setup_uptrace(
+        service_name=args.uptrace_orchestrator_service_name,
+        entity_type="orchestrator",
+        dsn=args.uptrace_dsn,
+        deployment_environment=args.uptrace_env,
+    )
     proxies = load_proxy_list(args.proxy, args.proxy_file)
     available_ram_gb = args.available_ram_gb
     if available_ram_gb is None:
@@ -232,6 +270,10 @@ async def run_orchestrator(args: argparse.Namespace) -> None:
                 "download_host": download_host,
                 "download_port": download_port,
                 "download_url_ttl_sec": max(30, int(args.download_url_ttl_sec)),
+                "uptrace_enabled": uptrace_enabled,
+                "uptrace_env": args.uptrace_env,
+                "uptrace_orchestrator_service_name": args.uptrace_orchestrator_service_name,
+                "uptrace_worker_service_name": args.uptrace_worker_service_name,
             },
             ensure_ascii=False,
         ),
@@ -255,6 +297,9 @@ async def run_orchestrator(args: argparse.Namespace) -> None:
         download_port=download_port,
         download_url_ttl_sec=max(30, int(args.download_url_ttl_sec)),
         download_secret=args.download_secret,
+        uptrace_dsn=args.uptrace_dsn,
+        uptrace_environment=args.uptrace_env,
+        uptrace_worker_service_name=args.uptrace_worker_service_name,
     )
     await server.run(bootstrap_store_code=args.bootstrap_store_code)
 

@@ -35,8 +35,13 @@ from .requests import (
     WorkersRequest,
     parse_request,
 )
-from .utils import require_websockets_module, utc_now_iso
+from .utils import DEFAULT_WORKER_SERVICE_NAME, require_websockets_module, utc_now_iso
 from .worker import worker_process_loop
+
+try:
+    from opentelemetry import trace as otel_trace  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    otel_trace = None
 
 
 LOGGER = logging.getLogger(__name__)
@@ -65,6 +70,9 @@ class OrchestratorServer:
         download_port: int | None = None,
         download_url_ttl_sec: int = 3600,
         download_secret: str | None = None,
+        uptrace_dsn: str | None = None,
+        uptrace_environment: str | None = None,
+        uptrace_worker_service_name: str = DEFAULT_WORKER_SERVICE_NAME,
     ):
         self.host = host
         self.port = port
@@ -72,6 +80,9 @@ class OrchestratorServer:
         self.download_port = int(download_port if download_port is not None else (port + 1))
         self.download_url_ttl_sec = max(30, int(download_url_ttl_sec))
         self._download_secret = (download_secret or secrets.token_hex(32)).encode("utf-8")
+        self._uptrace_dsn = uptrace_dsn
+        self._uptrace_environment = uptrace_environment
+        self._uptrace_worker_service_name = uptrace_worker_service_name
         if auth_password == "":
             raise ValueError("auth_password must be non-empty when provided.")
         self._auth_password = auth_password
@@ -107,6 +118,13 @@ class OrchestratorServer:
             return None
         return self.proxies[index % len(self.proxies)]
 
+    @staticmethod
+    def _span_context(name: str, *, attributes: dict[str, Any] | None = None) -> Any:
+        if otel_trace is None:
+            return contextlib.nullcontext()
+        tracer = otel_trace.get_tracer(__name__)
+        return tracer.start_as_current_span(name, attributes=attributes or {})
+
     def _spawn_worker(self, worker_id: int, *, replace: bool) -> None:
         index = worker_id - 1
         previous_queue = self._worker_queues.get(worker_id)
@@ -124,6 +142,9 @@ class OrchestratorServer:
                 worker_queue,
                 self._result_queue,
                 self.max_jobs_per_worker,
+                self._uptrace_dsn,
+                self._uptrace_worker_service_name,
+                self._uptrace_environment,
             ),
             daemon=False,
             name=f"orchestrator-worker-{worker_id}",
@@ -139,11 +160,12 @@ class OrchestratorServer:
         self._worker_current_job.setdefault(worker_id, None)
 
         LOGGER.info(
-            "Worker started: index=%s pid=%s proxy=%s max_jobs_per_worker=%s",
+            "Worker started: index=%s pid=%s proxy=%s max_jobs_per_worker=%s telemetry_service=%s",
             worker_id,
             process.pid,
             self._worker_proxy(index) or "none",
             self.max_jobs_per_worker,
+            self._uptrace_worker_service_name,
         )
 
     def _ensure_worker_alive(self, worker_id: int) -> bool:
@@ -1052,24 +1074,31 @@ class OrchestratorServer:
     async def _log_heartbeat(self) -> None:
         while not self._stop_event.is_set():
             await asyncio.sleep(15.0)
-            reconciled_jobs = self._reconcile_orphaned_running_jobs()
-            normalized_slots, restarted_workers = self._reconcile_worker_slots()
-            if reconciled_jobs > 0 or normalized_slots > 0 or restarted_workers > 0:
-                await self._try_dispatch_jobs()
-            cleaned = self._cleanup_expired_download_artifacts()
-            pruned = self._job_store.prune()
-            summary = self._job_store.summary()
-            LOGGER.debug(
-                "Heartbeat: workers=%s jobs_total=%s jobs_by_status=%s reconciled_jobs=%s normalized_slots=%s restarted_workers=%s cleaned=%s pruned=%s",
-                len(self._workers),
-                summary["jobs_total"],
-                summary["jobs_by_status"],
-                reconciled_jobs,
-                normalized_slots,
-                restarted_workers,
-                cleaned,
-                pruned,
-            )
+            with self._span_context(
+                "orchestrator.heartbeat",
+                attributes={
+                    "app.entity_type": "orchestrator",
+                    "app.workers_total": len(self._workers),
+                },
+            ):
+                reconciled_jobs = self._reconcile_orphaned_running_jobs()
+                normalized_slots, restarted_workers = self._reconcile_worker_slots()
+                if reconciled_jobs > 0 or normalized_slots > 0 or restarted_workers > 0:
+                    await self._try_dispatch_jobs()
+                cleaned = self._cleanup_expired_download_artifacts()
+                pruned = self._job_store.prune()
+                summary = self._job_store.summary()
+                LOGGER.debug(
+                    "Heartbeat: workers=%s jobs_total=%s jobs_by_status=%s reconciled_jobs=%s normalized_slots=%s restarted_workers=%s cleaned=%s pruned=%s",
+                    len(self._workers),
+                    summary["jobs_total"],
+                    summary["jobs_by_status"],
+                    reconciled_jobs,
+                    normalized_slots,
+                    restarted_workers,
+                    cleaned,
+                    pruned,
+                )
 
     async def _enqueue_job(self, request: dict[str, Any]) -> dict[str, Any]:
         store_code = str(request.get("store_code", "")).strip()

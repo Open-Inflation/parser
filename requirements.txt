@@ -2,6 +2,7 @@ websockets
 fastapi
 uvicorn
 openinflation-dataclass
+uptrace
 fixprice-api
 chizhik_api
 perekrestok_api

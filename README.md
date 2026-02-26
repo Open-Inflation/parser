@@ -70,6 +70,7 @@ python -m openinflation_parser.orchestrator \
 ```
 
 Для подробного трассинга можно использовать `--log-level DEBUG`.
+Для отправки телеметрии в Uptrace укажите `--uptrace-dsn` или переменную окружения `UPTRACE_DSN`.
 
 Важно: оркестратор в этом режиме только поднимает воркеры и ждёт задачи по WebSocket (`submit_store`).
 Чтобы запустить парсинг сразу при старте, передайте `--bootstrap-store-code <PFM>`.
@@ -85,6 +86,28 @@ python -m openinflation_parser.orchestrator \
 - `--download-host` / `--download-port` — где поднимать FastAPI endpoint загрузки.
 - `--download-url-ttl-sec` — время жизни подписанной ссылки.
 - `--download-secret` — HMAC secret для подписи ссылок (если не передан, генерируется при старте).
+- `--uptrace-dsn` — DSN для Uptrace (или `UPTRACE_DSN`).
+- `--uptrace-env` — deployment environment для Uptrace (`dev/stage/prod` и т.д.).
+- `--uptrace-orchestrator-service-name` — имя сервиса оркестратора в Uptrace.
+- `--uptrace-worker-service-name` — имя сервиса воркеров в Uptrace.
+
+### Uptrace: оркестратор и воркеры как независимые сущности
+
+```bash
+openinflation-orchestrator \
+  --host 127.0.0.1 \
+  --port 8765 \
+  --parser fixprice \
+  --bootstrap-store-code C001 \
+  --log-level DEBUG \
+  --uptrace-dsn "$UPTRACE_DSN" \
+  --uptrace-env prod \
+  --uptrace-orchestrator-service-name openinflation-orchestrator \
+  --uptrace-worker-service-name openinflation-worker
+```
+
+Логи теперь содержат стабильные поля `svc/role/worker/job/store/parser/trace/span`,
+что упрощает фильтрацию в терминале и корреляцию в Uptrace.
 
 Пример для Чижика:
 ```bash
