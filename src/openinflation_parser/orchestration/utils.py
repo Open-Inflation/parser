@@ -72,6 +72,28 @@ class _ObservabilityContextFilter(logging.Filter):
         return True
 
 
+def _replace_observability_filter(target: Any, observability_filter: _ObservabilityContextFilter) -> None:
+    for existing_filter in list(target.filters):
+        if isinstance(existing_filter, _ObservabilityContextFilter):
+            target.removeFilter(existing_filter)
+    target.addFilter(observability_filter)
+
+
+def attach_observability_filter(handler: logging.Handler) -> None:
+    root_logger = logging.getLogger()
+    observability_filter = next(
+        (
+            current_filter
+            for current_filter in root_logger.filters
+            if isinstance(current_filter, _ObservabilityContextFilter)
+        ),
+        None,
+    )
+    if observability_filter is None:
+        return
+    _replace_observability_filter(handler, observability_filter)
+
+
 def set_log_context(**values: Any) -> Token[dict[str, str]]:
     context = dict(_LOG_CONTEXT.get())
     for key, value in values.items():
@@ -108,16 +130,14 @@ def setup_logging(
         force=True,
     )
     root_logger = logging.getLogger()
-    for existing_filter in list(root_logger.filters):
-        if isinstance(existing_filter, _ObservabilityContextFilter):
-            root_logger.removeFilter(existing_filter)
-    root_logger.addFilter(
-        _ObservabilityContextFilter(
-            service_name=service_name,
-            entity_type=entity_type,
-            worker_id=worker_id,
-        )
+    observability_filter = _ObservabilityContextFilter(
+        service_name=service_name,
+        entity_type=entity_type,
+        worker_id=worker_id,
     )
+    _replace_observability_filter(root_logger, observability_filter)
+    for handler in root_logger.handlers:
+        _replace_observability_filter(handler, observability_filter)
     # Keep third-party retry internals from flooding DEBUG logs for every request.
     third_party_level = max(logging.INFO, numeric_level)
     logging.getLogger("aiohttp_retry").setLevel(third_party_level)
@@ -154,6 +174,7 @@ def setup_uptrace(
     resolved_environment = (
         deployment_environment
         or os.environ.get("UPTRACE_DEPLOYMENT_ENV")
+        or os.environ.get("OTEL_DEPLOYMENT_ENVIRONMENT")
         or os.environ.get("ENVIRONMENT")
         or "dev"
     )

@@ -14,6 +14,7 @@ from .models import WorkerJob
 from .utils import (
     DEFAULT_WORKER_SERVICE_NAME,
     LOG_FORMAT,
+    attach_observability_filter,
     reset_log_context,
     safe_store_code,
     set_log_context,
@@ -58,6 +59,7 @@ def _attach_worker_job_log_handler(
     handler = logging.FileHandler(log_path, encoding="utf-8")
     handler.setLevel(getattr(logging, log_level.upper(), logging.INFO))
     handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    attach_observability_filter(handler)
     logging.getLogger().addHandler(handler)
     return log_path, handler
 
