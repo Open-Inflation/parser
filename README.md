@@ -155,6 +155,12 @@ openinflation-orchestrator \
 
 Если оркестратор запущен с `--auth-password`, добавляйте `"password":"<your-password>"` в каждый payload.
 
+Для `submit_store` действует правило приоритета:
+- значения, переданные в WebSocket запросе, имеют приоритет над значениями из CLI-дефолтов при запуске оркестратора;
+- если поле не передано (или `null`), используется дефолт запуска.
+
+Пример: `include_images` в `submit_store` переопределяет `--include-images` для конкретной задачи.
+
 - `{"action":"ping","password":"<your-password>"}`
 - `{"action":"submit_store","store_code":"C001","city_id":3,"password":"<your-password>"}`
 - `{"action":"submit_store","store_code":"C001","city_id":3,"full_catalog":true,"max_pages_per_category":200,"products_per_page":27,"api_timeout_ms":120000,"password":"<your-password>"}`
