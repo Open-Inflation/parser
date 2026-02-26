@@ -80,6 +80,7 @@ python -m openinflation_parser.orchestrator \
 - `--jobs-max-history` — лимит terminal jobs в памяти/БД.
 - `--jobs-retention-sec` — TTL terminal jobs.
 - `--jobs-db-path` — путь к sqlite с состоянием задач (`""` чтобы отключить).
+- `--max-jobs-per-worker` — перезапуск воркера после N задач (по умолчанию `1`) для ограничения роста памяти в долгих прогонах.
 - `--auth-password` — статический пароль для websocket-команд (если задан, обязателен в каждом payload как `password`).
 - `--download-host` / `--download-port` — где поднимать FastAPI endpoint загрузки.
 - `--download-url-ttl-sec` — время жизни подписанной ссылки.

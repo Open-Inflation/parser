@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import logging
 import traceback
 from pathlib import Path
@@ -161,9 +162,11 @@ def worker_process_loop(
     log_level: str,
     job_queue: Any,
     result_queue: Any,
+    max_jobs_per_process: int = 1,
 ) -> None:
     setup_logging(log_level)
     LOGGER.info("Worker %s booted (proxy=%s)", worker_id, proxy or "none")
+    jobs_processed = 0
 
     while True:
         payload = job_queue.get()
@@ -278,3 +281,12 @@ def worker_process_loop(
                         job.job_id,
                         worker_log_path,
                     )
+            jobs_processed += 1
+            gc.collect()
+            if jobs_processed >= max(1, int(max_jobs_per_process)):
+                LOGGER.info(
+                    "Worker %s reached max_jobs_per_process=%s and will exit for recycle",
+                    worker_id,
+                    max_jobs_per_process,
+                )
+                break

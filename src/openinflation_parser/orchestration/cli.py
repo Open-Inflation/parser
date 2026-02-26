@@ -130,6 +130,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Optional hard cap for worker count.",
     )
     parser.add_argument(
+        "--max-jobs-per-worker",
+        type=int,
+        default=1,
+        help="Recycle worker process after this many jobs to cap long-run memory growth.",
+    )
+    parser.add_argument(
         "--bootstrap-store-code",
         default=None,
         help="Submit this store code immediately after startup.",
@@ -212,6 +218,7 @@ async def run_orchestrator(args: argparse.Namespace) -> None:
                 "ram_per_worker_gb": args.ram_per_worker_gb,
                 "proxies": len(proxies),
                 "proxy_reuse_factor": proxy_reuse_factor,
+                "max_jobs_per_worker": max(1, int(args.max_jobs_per_worker)),
                 "output_dir": str(Path(args.output_dir).expanduser().resolve()),
                 "log_level": args.log_level,
                 "full_catalog": args.full_catalog,
@@ -239,6 +246,7 @@ async def run_orchestrator(args: argparse.Namespace) -> None:
         proxies=proxies,
         defaults=defaults,
         log_level=args.log_level,
+        max_jobs_per_worker=max(1, int(args.max_jobs_per_worker)),
         jobs_max_history=max(1, args.jobs_max_history),
         jobs_retention_sec=max(60, args.jobs_retention_sec),
         jobs_db_path=jobs_db_path,

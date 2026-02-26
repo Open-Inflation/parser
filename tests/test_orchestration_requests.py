@@ -419,6 +419,70 @@ def test_dispatch_rules_allow_same_proxy_for_different_parsers() -> None:
     assert parsers == {"fixprice", "chizhik"}
 
 
+def test_try_dispatch_restarts_dead_idle_worker(monkeypatch: pytest.MonkeyPatch) -> None:
+    defaults = _job_defaults()
+    server = OrchestratorServer(
+        host="127.0.0.1",
+        port=8765,
+        worker_count=1,
+        proxies=[],
+        defaults=defaults,
+        jobs_db_path=None,
+    )
+
+    class _DeadProcess:
+        pid = 1001
+
+        @staticmethod
+        def is_alive() -> bool:
+            return False
+
+    class _AliveProcess:
+        pid = 1002
+
+        @staticmethod
+        def is_alive() -> bool:
+            return True
+
+    queue_1: Queue = Queue()
+    server._workers = [_DeadProcess()]  # type: ignore[assignment]
+    server._worker_queues = {1: queue_1}
+    server._worker_busy = {1: False}
+    server._worker_current_job = {1: None}
+
+    job = WorkerJob(
+        job_id="j-restart-1",
+        parser_name="fixprice",
+        store_code="C001",
+        output_dir="./output",
+    )
+    server._job_store.upsert(
+        {
+            "job_id": job.job_id,
+            "status": "queued",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "store_code": job.store_code,
+            "parser": job.parser_name,
+        }
+    )
+    server._pending_jobs = [job]
+
+    restart_calls: list[tuple[int, bool]] = []
+
+    def _fake_spawn_worker(worker_id: int, *, replace: bool) -> None:
+        restart_calls.append((worker_id, replace))
+        server._workers[worker_id - 1] = _AliveProcess()  # type: ignore[index]
+
+    monkeypatch.setattr(server, "_spawn_worker", _fake_spawn_worker)
+
+    dispatched = asyncio.run(server._try_dispatch_jobs())
+    assert dispatched == 1
+    assert restart_calls == [(1, True)]
+    assert server._pending_jobs == []
+    payload = queue_1.get_nowait()
+    assert payload["job_id"] == "j-restart-1"
+
+
 def test_present_job_contains_signed_download_url(tmp_path: Path) -> None:
     defaults = _job_defaults()
     server = OrchestratorServer(

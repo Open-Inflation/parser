@@ -56,6 +56,7 @@ class OrchestratorServer:
         proxies: list[str],
         defaults: JobDefaults,
         log_level: str = "INFO",
+        max_jobs_per_worker: int = 1,
         jobs_max_history: int = 1000,
         jobs_retention_sec: int = 86400,
         jobs_db_path: str | None = None,
@@ -78,6 +79,7 @@ class OrchestratorServer:
         self.proxies = proxies
         self.defaults = defaults
         self.log_level = log_level
+        self.max_jobs_per_worker = max(1, int(max_jobs_per_worker))
 
         self._ctx = mp.get_context("spawn")
         self._result_queue = self._ctx.Queue()
@@ -104,6 +106,63 @@ class OrchestratorServer:
         if not self.proxies:
             return None
         return self.proxies[index % len(self.proxies)]
+
+    def _spawn_worker(self, worker_id: int, *, replace: bool) -> None:
+        index = worker_id - 1
+        previous_queue = self._worker_queues.get(worker_id)
+        if replace and previous_queue is not None:
+            with contextlib.suppress(Exception):
+                previous_queue.close()
+
+        worker_queue = self._ctx.Queue()
+        process = self._ctx.Process(
+            target=worker_process_loop,
+            args=(
+                worker_id,
+                self._worker_proxy(index),
+                self.log_level,
+                worker_queue,
+                self._result_queue,
+                self.max_jobs_per_worker,
+            ),
+            daemon=False,
+            name=f"orchestrator-worker-{worker_id}",
+        )
+        process.start()
+
+        if replace:
+            self._workers[index] = process
+        else:
+            self._workers.append(process)
+        self._worker_queues[worker_id] = worker_queue
+        self._worker_busy.setdefault(worker_id, False)
+        self._worker_current_job.setdefault(worker_id, None)
+
+        LOGGER.info(
+            "Worker started: index=%s pid=%s proxy=%s max_jobs_per_worker=%s",
+            worker_id,
+            process.pid,
+            self._worker_proxy(index) or "none",
+            self.max_jobs_per_worker,
+        )
+
+    def _ensure_worker_alive(self, worker_id: int) -> bool:
+        process = self._workers[worker_id - 1]
+        if process.is_alive():
+            return True
+
+        if self._worker_busy.get(worker_id, False):
+            return False
+        if self._worker_current_job.get(worker_id) is not None:
+            return False
+
+        LOGGER.warning(
+            "Worker is not alive and will be restarted: index=%s old_pid=%s",
+            worker_id,
+            process.pid,
+        )
+        self._spawn_worker(worker_id, replace=True)
+        return self._workers[worker_id - 1].is_alive()
 
     def _download_public_host(self) -> str:
         if self.download_host in {"0.0.0.0", "::"}:
@@ -628,28 +687,7 @@ class OrchestratorServer:
         LOGGER.info("Starting %s workers", self.worker_count)
         for index in range(self.worker_count):
             worker_id = index + 1
-            worker_queue = self._ctx.Queue()
-            process = self._ctx.Process(
-                target=worker_process_loop,
-                args=(
-                    worker_id,
-                    self._worker_proxy(index),
-                    self.log_level,
-                    worker_queue,
-                    self._result_queue,
-                ),
-                daemon=False,
-                name=f"orchestrator-worker-{worker_id}",
-            )
-            process.start()
-            LOGGER.info(
-                "Worker started: index=%s pid=%s proxy=%s",
-                worker_id,
-                process.pid,
-                self._worker_proxy(index) or "none",
-            )
-            self._workers.append(process)
-            self._worker_queues[worker_id] = worker_queue
+            self._spawn_worker(worker_id, replace=False)
             self._worker_busy[worker_id] = False
             self._worker_current_job[worker_id] = None
 
@@ -722,6 +760,8 @@ class OrchestratorServer:
             if not self._pending_jobs:
                 break
             if self._worker_busy.get(worker_id, False):
+                continue
+            if not self._ensure_worker_alive(worker_id):
                 continue
 
             selected_index: int | None = None
