@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -229,7 +230,17 @@ class PerekrestokCatalogMixin:
             page=page,
             limit=safe_limit,
         )
-        payload = response.json()
+        try:
+            payload = response.json()
+        except (json.JSONDecodeError, ValueError) as exc:
+            LOGGER.warning(
+                "Failed to decode products feed payload: category_id=%s slug=%s page=%s error=%s",
+                query.category_id,
+                query.category_slug,
+                page,
+                exc,
+            )
+            return [], False
         if not isinstance(payload, dict):
             return [], False
         content = payload.get("content")

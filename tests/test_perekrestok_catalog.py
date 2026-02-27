@@ -1,11 +1,29 @@
 from __future__ import annotations
 
+import asyncio
+import json
+from types import SimpleNamespace
+from typing import Any
+
 from openinflation_parser.parsers.perekrestok.catalog import PerekrestokCatalogMixin
+from openinflation_parser.parsers.perekrestok.types import CatalogProductsQuery
 from openinflation_parser.parsers.runtime import ParserRuntimeMixin
 
 
 class _DummyPerekrestokCatalog(PerekrestokCatalogMixin, ParserRuntimeMixin):
-    pass
+    def __init__(self, api: Any | None = None) -> None:
+        self._api = api
+        self._product_info_cache: dict[str, dict[str, Any]] = {}
+        self.config = SimpleNamespace(
+            include_images=False,
+            image_limit_per_product=0,
+            strict_validation=False,
+        )
+
+    def _require_api(self) -> Any:
+        if self._api is None:
+            raise RuntimeError("API is not configured for test parser")
+        return self._api
 
 
 def test_image_url_from_node_uses_width_height_from_contract() -> None:
@@ -45,3 +63,35 @@ def test_image_url_from_node_with_missing_dimensions_returns_none() -> None:
         }
     )
     assert url is None
+
+
+def test_collect_products_page_handles_invalid_json_payload() -> None:
+    class _BrokenJsonResponse:
+        text = ""
+
+        def json(self) -> Any:
+            raise json.JSONDecodeError("Expecting value", self.text, 0)
+
+    class _Catalog:
+        async def feed(self, *, filter: Any, page: int, limit: int) -> _BrokenJsonResponse:
+            del filter
+            del page
+            del limit
+            return _BrokenJsonResponse()
+
+    class _Api:
+        Catalog = _Catalog()
+
+    parser = _DummyPerekrestokCatalog(api=_Api())
+    query = CatalogProductsQuery(category_id=42, category_uid="42", category_slug="bakery")
+
+    cards, has_next_page = asyncio.run(
+        parser._collect_products_page(
+            query=query,
+            page=1,
+            limit=24,
+        )
+    )
+
+    assert cards == []
+    assert has_next_page is False
