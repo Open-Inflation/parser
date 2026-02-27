@@ -358,6 +358,24 @@ def test_release_worker_slot_falls_back_when_worker_id_mismatch() -> None:
     assert server._worker_current_job[1] is None
 
 
+def test_release_worker_slot_keeps_busy_when_other_job_is_active() -> None:
+    defaults = _job_defaults()
+    server = OrchestratorServer(
+        host="127.0.0.1",
+        port=8765,
+        worker_count=1,
+        proxies=[],
+        defaults=defaults,
+        jobs_db_path=None,
+    )
+    server._worker_busy = {1: True}
+    server._worker_current_job = {1: "job-active"}
+
+    server._release_worker_slot_for_job(job_id="job-stale", worker_id=1)
+    assert server._worker_busy[1] is True
+    assert server._worker_current_job[1] == "job-active"
+
+
 def test_run_calls_stop_when_bootstrap_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     defaults = _job_defaults()
     server = OrchestratorServer(
@@ -627,6 +645,54 @@ def test_try_dispatch_restarts_dead_idle_worker(monkeypatch: pytest.MonkeyPatch)
     assert server._pending_jobs == []
     payload = queue_1.get_nowait()
     assert payload["job_id"] == "j-restart-1"
+
+
+def test_try_dispatch_skips_worker_with_active_slot_even_if_busy_false() -> None:
+    defaults = _job_defaults()
+    server = OrchestratorServer(
+        host="127.0.0.1",
+        port=8765,
+        worker_count=1,
+        proxies=[],
+        defaults=defaults,
+        jobs_db_path=None,
+    )
+
+    class _AliveProcess:
+        pid = 1003
+
+        @staticmethod
+        def is_alive() -> bool:
+            return True
+
+    queue_1: Queue = Queue()
+    server._workers = [_AliveProcess()]  # type: ignore[assignment]
+    server._worker_queues = {1: queue_1}
+    server._worker_busy = {1: False}
+    server._worker_current_job = {1: "job-already-assigned"}
+
+    job = WorkerJob(
+        job_id="j-should-not-dispatch",
+        parser_name="fixprice",
+        store_code="C001",
+        output_dir="./output",
+    )
+    server._job_store.upsert(
+        {
+            "job_id": job.job_id,
+            "status": "queued",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "store_code": job.store_code,
+            "parser": job.parser_name,
+        }
+    )
+    server._pending_jobs = [job]
+
+    dispatched = asyncio.run(server._try_dispatch_jobs())
+    assert dispatched == 0
+    assert len(server._pending_jobs) == 1
+    assert queue_1.empty()
+    assert server._worker_current_job[1] == "job-already-assigned"
 
 
 def test_present_job_contains_signed_download_url(tmp_path: Path) -> None:

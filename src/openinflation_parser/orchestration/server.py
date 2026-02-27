@@ -751,10 +751,13 @@ class OrchestratorServer:
         if pair is not None:
             self._active_proxy_parser_pairs.discard(pair)
         if worker_id is not None:
-            self._worker_busy[worker_id] = False
-            if self._worker_current_job.get(worker_id) == job_id:
+            current_job_id = self._worker_current_job.get(worker_id)
+            if current_job_id == job_id:
+                self._worker_busy[worker_id] = False
                 self._worker_current_job[worker_id] = None
                 return
+            if current_job_id is None:
+                self._worker_busy[worker_id] = False
 
         for candidate_worker_id, current_job_id in self._worker_current_job.items():
             if current_job_id == job_id:
@@ -782,6 +785,8 @@ class OrchestratorServer:
             if not self._pending_jobs:
                 break
             if self._worker_busy.get(worker_id, False):
+                continue
+            if self._worker_current_job.get(worker_id) is not None:
                 continue
             if not self._ensure_worker_alive(worker_id):
                 continue
