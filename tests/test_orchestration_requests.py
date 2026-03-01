@@ -517,6 +517,246 @@ def test_stream_job_log_returns_tail_and_end(tmp_path: Path) -> None:
     assert fake_websocket.sent_payloads[-1]["event"] == "end"
 
 
+def test_handle_client_stream_job_log_requires_auth_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    defaults = _job_defaults()
+    server = OrchestratorServer(
+        host="127.0.0.1",
+        port=8765,
+        worker_count=1,
+        proxies=[],
+        defaults=defaults,
+        jobs_db_path=None,
+        auth_password="secret",
+    )
+
+    stream_called = False
+
+    async def _fake_stream_job_log(_websocket: object, _request: StreamJobLogRequest) -> None:
+        nonlocal stream_called
+        stream_called = True
+
+    monkeypatch.setattr(server, "_stream_job_log", _fake_stream_job_log)
+
+    class _FakeWebsocket:
+        remote_address = ("127.0.0.1", 9000)
+
+        def __init__(self) -> None:
+            self._messages = [
+                json.dumps({"action": "stream_job_log", "job_id": "job-auth-1"})
+            ]
+            self.sent_payloads: list[dict[str, object]] = []
+
+        def __aiter__(self) -> "_FakeWebsocket":
+            return self
+
+        async def __anext__(self) -> str:
+            if not self._messages:
+                raise StopAsyncIteration
+            return self._messages.pop(0)
+
+        async def send(self, payload: str) -> None:
+            self.sent_payloads.append(json.loads(payload))
+
+    websocket = _FakeWebsocket()
+    asyncio.run(server._handle_client(websocket))
+
+    assert stream_called is False
+    assert websocket.sent_payloads
+    response = websocket.sent_payloads[-1]
+    assert response["ok"] is False
+    assert response["action"] == "stream_job_log"
+    assert response["event"] == "error"
+    assert response["error"] == "Unauthorized. Provide valid 'password'."
+
+
+def test_collect_results_recycles_worker_before_dispatch_when_worker_will_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    defaults = _job_defaults()
+    server = OrchestratorServer(
+        host="127.0.0.1",
+        port=8765,
+        worker_count=1,
+        proxies=[],
+        defaults=defaults,
+        jobs_db_path=None,
+    )
+
+    class _ExitingProcess:
+        pid = 3001
+
+        @staticmethod
+        def join(_timeout: float | None = None) -> None:
+            return None
+
+        @staticmethod
+        def is_alive() -> bool:
+            return False
+
+        @staticmethod
+        def terminate() -> None:
+            return None
+
+    class _AliveProcess:
+        pid = 3002
+
+        @staticmethod
+        def join(_timeout: float | None = None) -> None:
+            return None
+
+        @staticmethod
+        def is_alive() -> bool:
+            return True
+
+        @staticmethod
+        def terminate() -> None:
+            return None
+
+    class _RecordingQueue:
+        def __init__(self, events: list[str]) -> None:
+            self.events = events
+            self.payloads: list[dict[str, object]] = []
+
+        def put(self, payload: dict[str, object]) -> None:
+            self.events.append("dispatch")
+            self.payloads.append(payload)
+
+    server._workers = [_ExitingProcess()]  # type: ignore[assignment]
+    server._worker_busy = {1: True}
+    server._worker_current_job = {1: "job-finished-1"}
+
+    events: list[str] = []
+    recording_queue = _RecordingQueue(events)
+    server._worker_queues = {1: recording_queue}
+
+    finished_job_id = "job-finished-1"
+    pending_job = WorkerJob(
+        job_id="job-next-1",
+        parser_name="fixprice",
+        store_code="C002",
+        output_dir="./output",
+    )
+    server._job_store.upsert(
+        {
+            "job_id": finished_job_id,
+            "status": "running",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "started_at": "2026-01-01T00:00:05+00:00",
+            "worker_id": 1,
+        }
+    )
+    server._job_store.upsert(
+        {
+            "job_id": pending_job.job_id,
+            "status": "queued",
+            "created_at": "2026-01-01T00:00:10+00:00",
+            "store_code": pending_job.store_code,
+            "parser": pending_job.parser_name,
+        }
+    )
+    server._pending_jobs = [pending_job]
+
+    spawn_calls: list[tuple[int, bool]] = []
+
+    def _fake_spawn_worker(worker_id: int, *, replace: bool) -> None:
+        events.append("spawn")
+        spawn_calls.append((worker_id, replace))
+        server._workers[worker_id - 1] = _AliveProcess()  # type: ignore[index]
+
+    monkeypatch.setattr(server, "_spawn_worker", _fake_spawn_worker)
+
+    result_queue: Queue = Queue()
+    result_queue.put(
+        {
+            "event": "finished",
+            "status": "success",
+            "worker_id": 1,
+            "worker_pid": 3001,
+            "worker_will_exit": True,
+            "job_id": finished_job_id,
+            "timestamp": "2026-01-01T00:00:20+00:00",
+        }
+    )
+    result_queue.put(None)
+    server._result_queue = result_queue
+
+    asyncio.run(server._collect_results())
+
+    assert spawn_calls == [(1, True)]
+    assert events[:2] == ["spawn", "dispatch"]
+    assert recording_queue.payloads
+    assert recording_queue.payloads[0]["job_id"] == pending_job.job_id
+    assert server._worker_current_job[1] == pending_job.job_id
+    assert server._worker_busy[1] is True
+
+
+def test_recycle_worker_slot_skips_when_worker_slot_replaced_during_join(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    defaults = _job_defaults()
+    server = OrchestratorServer(
+        host="127.0.0.1",
+        port=8765,
+        worker_count=1,
+        proxies=[],
+        defaults=defaults,
+        jobs_db_path=None,
+    )
+
+    class _ReplacementProcess:
+        pid = 4102
+
+        @staticmethod
+        def join(_timeout: float | None = None) -> None:
+            return None
+
+        @staticmethod
+        def is_alive() -> bool:
+            return True
+
+        @staticmethod
+        def terminate() -> None:
+            return None
+
+    replacement = _ReplacementProcess()
+
+    class _OldProcess:
+        pid = 4101
+
+        def join(self, _timeout: float | None = None) -> None:
+            server._workers[0] = replacement  # type: ignore[index]
+
+        @staticmethod
+        def is_alive() -> bool:
+            return False
+
+        @staticmethod
+        def terminate() -> None:
+            return None
+
+    server._workers = [_OldProcess()]  # type: ignore[assignment]
+    server._worker_busy = {1: True}
+    server._worker_current_job = {1: "job-replacement"}
+
+    spawn_calls: list[tuple[int, bool]] = []
+
+    def _fake_spawn_worker(worker_id: int, *, replace: bool) -> None:
+        spawn_calls.append((worker_id, replace))
+
+    monkeypatch.setattr(server, "_spawn_worker", _fake_spawn_worker)
+
+    recycled = asyncio.run(
+        server._recycle_worker_slot(worker_id=1, expected_pid=4101)
+    )
+    assert recycled is False
+    assert spawn_calls == []
+    assert server._worker_busy[1] is True
+    assert server._worker_current_job[1] == "job-replacement"
+    assert 1 not in server._workers_pending_recycle
+
+
 def test_dispatch_rules_allow_same_proxy_for_different_parsers() -> None:
     defaults = _job_defaults()
     server = OrchestratorServer(

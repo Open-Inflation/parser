@@ -3,7 +3,6 @@ from __future__ import annotations
 import atexit
 import base64
 import binascii
-import gzip
 import logging
 import os
 import re
@@ -319,24 +318,6 @@ def safe_store_code(value: str) -> str:
     token = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value.strip())
     token = token.strip("_")
     return token or "store"
-
-
-def write_payload(payload: str, *, output_dir: str, store_code: str) -> tuple[str, str]:
-    out_dir = Path(output_dir).expanduser().resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    base = f"{safe_store_code(store_code)}_{timestamp}"
-
-    json_path = out_dir / f"{base}.json"
-    json_gz_path = out_dir / f"{base}.json.gz"
-
-    json_path.write_text(payload, encoding="utf-8")
-    with gzip.open(json_gz_path, "wt", encoding="utf-8") as stream:
-        stream.write(payload)
-
-    LOGGER.info("Store payload saved: json=%s gz=%s", json_path, json_gz_path)
-    return str(json_path), str(json_gz_path)
 
 
 def _decode_inline_image_token(value: str) -> tuple[bytes, str] | None:

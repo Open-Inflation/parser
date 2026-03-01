@@ -98,6 +98,7 @@ class OrchestratorServer:
         self._worker_queues: dict[int, Any] = {}
         self._worker_busy: dict[int, bool] = {}
         self._worker_current_job: dict[int, str | None] = {}
+        self._workers_pending_recycle: set[int] = set()
         self._pending_jobs: list[WorkerJob] = []
         self._active_proxy_parser_pairs: set[tuple[str, str]] = set()
         self._job_proxy_pair: dict[str, tuple[str, str]] = {}
@@ -197,33 +198,57 @@ class OrchestratorServer:
         if worker_id < 1 or worker_id > len(self._workers):
             return False
 
-        process = self._workers[worker_id - 1]
-        current_pid = process.pid
-        if expected_pid is not None and current_pid != expected_pid:
-            LOGGER.debug(
-                "Skip worker recycle due to pid mismatch: worker=%s expected_pid=%s current_pid=%s",
-                worker_id,
-                expected_pid,
-                current_pid,
-            )
-            return False
+        self._workers_pending_recycle.add(worker_id)
+        try:
+            process = self._workers[worker_id - 1]
+            current_pid = process.pid
+            if expected_pid is not None and current_pid != expected_pid:
+                LOGGER.debug(
+                    "Skip worker recycle due to pid mismatch: worker=%s expected_pid=%s current_pid=%s",
+                    worker_id,
+                    expected_pid,
+                    current_pid,
+                )
+                return False
 
-        await asyncio.to_thread(process.join, 2.0)
-        if process.is_alive():
-            LOGGER.warning(
-                "Worker did not exit during recycle window, terminating: worker=%s pid=%s",
-                worker_id,
-                process.pid,
-            )
-            process.terminate()
             await asyncio.to_thread(process.join, 2.0)
+            latest_process = self._workers[worker_id - 1]
+            if latest_process is not process:
+                LOGGER.debug(
+                    "Skip worker recycle because slot already replaced: worker=%s expected_pid=%s current_pid=%s",
+                    worker_id,
+                    expected_pid,
+                    latest_process.pid,
+                )
+                return False
 
-        if self._is_stopped:
-            return False
-        self._spawn_worker(worker_id, replace=True)
-        self._worker_busy[worker_id] = False
-        self._worker_current_job[worker_id] = None
-        return True
+            if process.is_alive():
+                LOGGER.warning(
+                    "Worker did not exit during recycle window, terminating: worker=%s pid=%s",
+                    worker_id,
+                    process.pid,
+                )
+                process.terminate()
+                await asyncio.to_thread(process.join, 2.0)
+
+            latest_process = self._workers[worker_id - 1]
+            if latest_process is not process:
+                LOGGER.debug(
+                    "Skip worker recycle because slot replaced after terminate: worker=%s expected_pid=%s current_pid=%s",
+                    worker_id,
+                    expected_pid,
+                    latest_process.pid,
+                )
+                return False
+
+            if self._is_stopped:
+                return False
+            self._spawn_worker(worker_id, replace=True)
+            self._worker_busy[worker_id] = False
+            self._worker_current_job[worker_id] = None
+            return True
+        finally:
+            self._workers_pending_recycle.discard(worker_id)
 
     def _download_public_host(self) -> str:
         if self.download_host in {"0.0.0.0", "::"}:
@@ -837,6 +862,8 @@ class OrchestratorServer:
         for worker_id in range(1, len(self._workers) + 1):
             if not self._pending_jobs:
                 break
+            if worker_id in self._workers_pending_recycle:
+                continue
             if self._worker_busy.get(worker_id, False):
                 continue
             if self._worker_current_job.get(worker_id) is not None:
@@ -957,6 +984,8 @@ class OrchestratorServer:
                 and self._worker_current_job.get(worker_id) is None
                 and not self._worker_busy.get(worker_id, False)
             ):
+                if worker_id in self._workers_pending_recycle:
+                    continue
                 if self._ensure_worker_alive(worker_id):
                     restarted += 1
 
@@ -1400,6 +1429,16 @@ class OrchestratorServer:
                 continue
 
             if isinstance(request, StreamJobLogRequest):
+                if not self._is_authenticated(request):
+                    response = {
+                        "ok": False,
+                        "action": request.action,
+                        "event": "error",
+                        "job_id": request.job_id,
+                        "error": "Unauthorized. Provide valid 'password'.",
+                    }
+                    await websocket.send(json.dumps(response, ensure_ascii=False))
+                    continue
                 try:
                     await self._stream_job_log(websocket, request)
                 except Exception as exc:
