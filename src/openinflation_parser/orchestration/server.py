@@ -186,6 +186,45 @@ class OrchestratorServer:
         self._spawn_worker(worker_id, replace=True)
         return self._workers[worker_id - 1].is_alive()
 
+    async def _recycle_worker_slot(
+        self,
+        *,
+        worker_id: int,
+        expected_pid: int | None,
+    ) -> bool:
+        if self._is_stopped:
+            return False
+        if worker_id < 1 or worker_id > len(self._workers):
+            return False
+
+        process = self._workers[worker_id - 1]
+        current_pid = process.pid
+        if expected_pid is not None and current_pid != expected_pid:
+            LOGGER.debug(
+                "Skip worker recycle due to pid mismatch: worker=%s expected_pid=%s current_pid=%s",
+                worker_id,
+                expected_pid,
+                current_pid,
+            )
+            return False
+
+        await asyncio.to_thread(process.join, 2.0)
+        if process.is_alive():
+            LOGGER.warning(
+                "Worker did not exit during recycle window, terminating: worker=%s pid=%s",
+                worker_id,
+                process.pid,
+            )
+            process.terminate()
+            await asyncio.to_thread(process.join, 2.0)
+
+        if self._is_stopped:
+            return False
+        self._spawn_worker(worker_id, replace=True)
+        self._worker_busy[worker_id] = False
+        self._worker_current_job[worker_id] = None
+        return True
+
     def _download_public_host(self) -> str:
         if self.download_host in {"0.0.0.0", "::"}:
             return "127.0.0.1"
@@ -727,6 +766,20 @@ class OrchestratorServer:
                 return None
         return None
 
+    @staticmethod
+    def _worker_pid_from_value(value: Any) -> int | None:
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            token = value.strip()
+            if not token:
+                return None
+            try:
+                return int(token)
+            except ValueError:
+                return None
+        return None
+
     def _pair_for_job_and_worker(
         self,
         *,
@@ -940,6 +993,9 @@ class OrchestratorServer:
                 event_worker_id = self._worker_id_from_value(event.get("worker_id"))
                 if event_worker_id is not None:
                     job_state["worker_id"] = event_worker_id
+                event_worker_pid = self._worker_pid_from_value(event.get("worker_pid"))
+                if event_worker_pid is not None:
+                    job_state["worker_pid"] = event_worker_pid
                 output_worker_log = str(event.get("output_worker_log", "")).strip()
                 if output_worker_log:
                     job_state["output_worker_log"] = output_worker_log
@@ -953,10 +1009,14 @@ class OrchestratorServer:
 
             if event_name == "finished":
                 finished_worker_id = self._worker_id_from_value(event.get("worker_id"))
+                finished_worker_pid = self._worker_pid_from_value(event.get("worker_pid"))
+                worker_will_exit = coerce_bool(event.get("worker_will_exit", False))
                 job_state["status"] = event.get("status", "error")
                 job_state["finished_at"] = event.get("timestamp")
                 if finished_worker_id is not None:
                     job_state["worker_id"] = finished_worker_id
+                if finished_worker_pid is not None:
+                    job_state["worker_pid"] = finished_worker_pid
                 if "message" in event:
                     job_state["message"] = event["message"]
                 if "traceback" in event:
@@ -990,6 +1050,17 @@ class OrchestratorServer:
                     event.get("worker_id"),
                 )
                 self._release_worker_slot_for_job(job_id=job_id, worker_id=finished_worker_id)
+                if worker_will_exit and finished_worker_id is not None:
+                    recycled = await self._recycle_worker_slot(
+                        worker_id=finished_worker_id,
+                        expected_pid=finished_worker_pid,
+                    )
+                    if recycled:
+                        LOGGER.info(
+                            "Worker recycled after max_jobs_per_worker: worker=%s previous_pid=%s",
+                            finished_worker_id,
+                            finished_worker_pid,
+                        )
                 await self._try_dispatch_jobs()
                 continue
 

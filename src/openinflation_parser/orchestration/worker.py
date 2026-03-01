@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import gc
 import logging
+import os
 import shutil
 import traceback
 from pathlib import Path
@@ -247,6 +248,7 @@ def worker_process_loop(
         uptrace_service_name,
     )
     jobs_processed = 0
+    max_jobs_limit = max(1, int(max_jobs_per_process))
 
     try:
         while True:
@@ -311,6 +313,7 @@ def worker_process_loop(
                     "event": "started",
                     "status": "running",
                     "worker_id": worker_id,
+                    "worker_pid": os.getpid(),
                     "job_id": job.job_id,
                     "timestamp": utc_now_iso(),
                     "output_worker_log": (
@@ -320,6 +323,7 @@ def worker_process_loop(
             )
 
             job_succeeded = False
+            worker_will_exit = (jobs_processed + 1) >= max_jobs_limit
             should_exit_after_job = False
             try:
                 with _job_span_context(worker_id=worker_id, job=job):
@@ -336,6 +340,8 @@ def worker_process_loop(
                         "event": "finished",
                         "status": "success",
                         "worker_id": worker_id,
+                        "worker_pid": os.getpid(),
+                        "worker_will_exit": worker_will_exit,
                         "job_id": job.job_id,
                         "timestamp": utc_now_iso(),
                         "output_json": json_path,
@@ -353,6 +359,8 @@ def worker_process_loop(
                         "event": "finished",
                         "status": "error",
                         "worker_id": worker_id,
+                        "worker_pid": os.getpid(),
+                        "worker_will_exit": worker_will_exit,
                         "job_id": job.job_id,
                         "timestamp": utc_now_iso(),
                         "message": str(exc),
@@ -374,11 +382,11 @@ def worker_process_loop(
                         )
                 jobs_processed += 1
                 gc.collect()
-                if jobs_processed >= max(1, int(max_jobs_per_process)):
+                if worker_will_exit:
                     LOGGER.info(
                         "Worker %s reached max_jobs_per_process=%s and will exit for recycle",
                         worker_id,
-                        max_jobs_per_process,
+                        max_jobs_limit,
                     )
                     should_exit_after_job = True
                 reset_log_context(job_context_token)
