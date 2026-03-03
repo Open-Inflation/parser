@@ -413,12 +413,12 @@ class FixPriceMapper:
             "rating": cls._safe_float(product.get("rating")),
             "reviews_count": cls._safe_int(product.get("reviewsCount")),
             "price": cls._price_str_to_float(product.get("price")),
-            "discount_price": (
-                cls._price_str_to_float(product.get("specialPrice"))
+            "discount_price": None,
+            "loyal_price": (
+                cls._price_str_to_float(product.get("specialPrice", {}).get("price"))
                 if product.get("specialPrice") is not None
                 else None
             ),
-            "loyal_price": cls._price_str_to_float(product.get("loyalPrice")),
             "wholesale_price": None,
             "price_unit": cls._safe_str(product.get("priceUnit")),
             "unit": unit,
