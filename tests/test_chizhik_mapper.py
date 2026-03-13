@@ -86,10 +86,33 @@ def _producer_country_from_meta(value: Any) -> str | None:
     return None
 
 
+def _source_page_url_from_product(product: dict[str, Any]) -> str | None:
+    slug = _to_str(product.get("slug"))
+    if slug is None:
+        return None
+    normalized = slug.strip().strip("/")
+    if not normalized:
+        return None
+    plu = _to_str(product.get("plu"))
+    if plu is not None:
+        normalized_plu = plu.strip()
+        if normalized_plu:
+            if normalized.endswith(f"--{normalized_plu}"):
+                slug_with_plu = normalized
+            elif normalized.endswith(f"-{normalized_plu}"):
+                slug_with_plu = f"{normalized[: -len(normalized_plu) - 1]}--{normalized_plu}"
+            else:
+                slug_base = normalized.rstrip("-")
+                slug_with_plu = f"{slug_base}--{normalized_plu}"
+            return f"https://chizhik.club/product/{slug_with_plu}/"
+    return f"https://chizhik.club/product/{normalized}/"
+
+
 def _expected_from_product_payload(product: dict[str, Any]) -> dict[str, Any]:
     meta = _metadata_by_code(product)
     return {
         "plu": _to_str(product.get("plu")),
+        "source_page_url": _source_page_url_from_product(product),
         "title": _to_str(product.get("title")),
         "description": _to_str(product.get("description")),
         "adult": _to_bool(product.get("is_adults")),
@@ -219,6 +242,7 @@ def test_map_product_from_live_list_response(chizhik_live_payloads: dict[str, An
 
     assert mapped.sku is None
     assert mapped.plu == expected["plu"]
+    assert mapped.source_page_url == expected["source_page_url"]
     assert mapped.title == expected["title"]
     assert mapped.description == expected["description"]
     assert mapped.adult == expected["adult"]
@@ -246,6 +270,7 @@ def test_map_product_from_live_info_response(chizhik_live_payloads: dict[str, An
     mapped = ChizhikMapper.map_product(product)
 
     assert mapped.plu == expected["plu"]
+    assert mapped.source_page_url == expected["source_page_url"]
     assert mapped.title == expected["title"]
     assert mapped.description == expected["description"]
     assert mapped.adult == expected["adult"]
@@ -286,6 +311,48 @@ def test_build_catalog_queries_full_mode_prefers_leaf_categories(
 
     assert queries
     assert query_ids.isdisjoint(roots_with_children)
+
+
+def test_map_product_source_page_url_strips_slug_slashes() -> None:
+    mapped = ChizhikMapper.map_product(
+        {
+            "plu": "12345",
+            "slug": "/test-product-12345/",
+            "title": "Тестовый товар",
+        }
+    )
+
+    assert mapped.source_page_url == "https://chizhik.club/product/test-product--12345/"
+
+
+def test_map_product_source_page_url_does_not_duplicate_plu_suffix() -> None:
+    mapped = ChizhikMapper.map_product(
+        {
+            "plu": "4303471",
+            "slug": "voda-aldaya-essentuki-tselebnaya-mineralnaya-leche--4303471",
+            "title": "Вода",
+        }
+    )
+
+    assert (
+        mapped.source_page_url
+        == "https://chizhik.club/product/voda-aldaya-essentuki-tselebnaya-mineralnaya-leche--4303471/"
+    )
+
+
+def test_map_product_source_page_url_handles_slug_with_trailing_dash() -> None:
+    mapped = ChizhikMapper.map_product(
+        {
+            "plu": "4303471",
+            "slug": "voda-aldaya-essentuki-tselebnaya-mineralnaya-leche-",
+            "title": "Вода",
+        }
+    )
+
+    assert (
+        mapped.source_page_url
+        == "https://chizhik.club/product/voda-aldaya-essentuki-tselebnaya-mineralnaya-leche--4303471/"
+    )
 
 
 def test_collect_products_for_queries_merges_categories_uid_for_duplicate_key() -> None:

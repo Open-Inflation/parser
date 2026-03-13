@@ -17,6 +17,8 @@ from ..model_builder import build_model
 class ChizhikMapper:
     """Mappers from Chizhik API contracts to openinflation dataclasses."""
 
+    PRODUCT_PAGE_BASE_URL = "https://chizhik.club/product"
+
     COUNTRY_NAME_TO_CODE: dict[str, str] = {
         "россия": "RUS",
         "russia": "RUS",
@@ -123,6 +125,28 @@ class ChizhikMapper:
         for node in nodes:
             walk(node)
         return prepared or None
+
+    @classmethod
+    def _source_page_url_from_product(cls, product: dict[str, Any]) -> str | None:
+        slug = cls._safe_str(product.get("slug"))
+        if slug is None:
+            return None
+        normalized = slug.strip().strip("/")
+        if not normalized:
+            return None
+        plu = cls._safe_str(product.get("plu"))
+        if plu is not None:
+            normalized_plu = plu.strip()
+            if normalized_plu:
+                if normalized.endswith(f"--{normalized_plu}"):
+                    slug_with_plu = normalized
+                elif normalized.endswith(f"-{normalized_plu}"):
+                    slug_with_plu = f"{normalized[: -len(normalized_plu) - 1]}--{normalized_plu}"
+                else:
+                    slug_base = normalized.rstrip("-")
+                    slug_with_plu = f"{slug_base}--{normalized_plu}"
+                return f"{cls.PRODUCT_PAGE_BASE_URL}/{slug_with_plu}/"
+        return f"{cls.PRODUCT_PAGE_BASE_URL}/{normalized}/"
 
     @classmethod
     def map_category_node(
@@ -272,7 +296,7 @@ class ChizhikMapper:
         payload: dict[str, Any] = {
             "sku": None,
             "plu": cls._safe_str(product.get("plu")),
-            "source_page_url": None,
+            "source_page_url": cls._source_page_url_from_product(product),
             "title": cls._safe_str(product.get("title")),
             "description": cls._safe_str(product.get("description")),
             "adult": cls._safe_bool(product.get("is_adults")),
