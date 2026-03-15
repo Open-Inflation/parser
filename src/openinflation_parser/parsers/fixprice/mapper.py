@@ -50,6 +50,7 @@ class FixPriceMapper:
         "объединенные арабские эмираты": "ARE",
         "китай": "CHN",
         "кнр": "CHN",
+        "китай кнр": "CHN",
         "китайская народная республика": "CHN",
     }
     PRICE_UNIT_ALIASES: dict[str, CurrencyCode] = {

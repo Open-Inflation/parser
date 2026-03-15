@@ -378,6 +378,7 @@ def test_producer_country_normalization_uses_russian_names_only() -> None:
         FixPriceMapper._producer_country_from_raw("Объединённые   Арабские, Эмираты.")
         == "ARE"
     )
+    assert FixPriceMapper._producer_country_from_raw("Китай (КНР)") == "CHN"
     assert FixPriceMapper._producer_country_from_raw("China") is None
 
 
