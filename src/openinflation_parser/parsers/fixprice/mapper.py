@@ -523,15 +523,9 @@ class FixPriceMapper:
         if source_slug:
             source_page_url = f"https://fix-price.com/catalog/{source_slug.lstrip('/')}"
 
-        unit = cls._unit_from_raw(product.get("unit"))
-        if unit is None:
-            unit = cls._unit_from_raw(product.get("unitType"))
+        unit = "KGM"
         available_raw = product.get("inStock")
-        available_count = (
-            cls._safe_int(available_raw)
-            if unit == "PCE"
-            else cls._safe_float(available_raw)
-        )
+        available_count = cls._safe_float(available_raw)
 
         metadata = cls._metadata_from_product(
             product,
@@ -559,10 +553,11 @@ class FixPriceMapper:
         dimension_height = cls._numeric_from_raw(variant.get("height"))
         dimension_width = cls._numeric_from_raw(variant.get("width"))
         dimension_depth = cls._numeric_from_raw(variant.get("length"))
-
-        package_quantity_net = None
-        package_quantity_gross = None
-        package_unit = None
+        package_quantity_gross = (
+            cls._numeric_from_raw(variant.get("weight"))
+            if unit == "KGM"
+            else None
+        )
 
         effective_price_unit = cls._price_unit_from_raw(product.get("priceUnit"))
         if effective_price_unit is None:
@@ -605,9 +600,9 @@ class FixPriceMapper:
             "price_unit": effective_price_unit,
             "unit": unit,
             "available_count": available_count,
-            "package_quantity_net": package_quantity_net,
+            "package_quantity_net": None,
             "package_quantity_gross": package_quantity_gross,
-            "package_unit": package_unit,
+            "package_unit": "KGM" if package_quantity_gross is not None else None,
             "dimension_height": dimension_height,
             "dimension_width": dimension_width,
             "dimension_depth": dimension_depth,

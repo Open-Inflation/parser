@@ -267,6 +267,44 @@ def test_map_product_does_not_invent_missing_values() -> None:
     assert mapped.categories_uid is None
 
 
+def test_map_product_sets_package_quantity_gross_from_variant_weight() -> None:
+    mapped = FixPriceMapper.map_product(
+        product={
+            "sku": "SKU-WEIGHT",
+            "price": "10.00",
+            "unitType": "кг",
+            "category": {"id": 1},
+            "variants": [
+                {
+                    "weight": 159.0,
+                    "height": 10,
+                    "width": 20,
+                    "length": 30,
+                }
+            ],
+        }
+    )
+
+    assert mapped.package_quantity_net is None
+    assert mapped.package_quantity_gross == 159.0
+    assert mapped.package_unit == "KGM"
+
+
+def test_map_product_does_not_set_package_quantity_gross_for_non_weight_unit() -> None:
+    mapped = FixPriceMapper.map_product(
+        product={
+            "sku": "SKU-NON-WEIGHT",
+            "price": "10.00",
+            "unitType": "шт",
+            "category": {"id": 1},
+            "variants": [{"weight": 159.0}],
+        }
+    )
+
+    assert mapped.package_quantity_gross is None
+    assert mapped.package_unit is None
+
+
 def test_map_store_without_warehouse_field_sets_type_none() -> None:
     city = FixPriceMapper.map_city(
         {"title": "X", "countryId": 2, "prefix": "г"},
