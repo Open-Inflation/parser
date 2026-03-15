@@ -6,7 +6,7 @@ from typing import Any, Iterator
 import pytest
 from fixprice_api import FixPriceAPI
 
-from openinflation_parser.parsers.fixprice import FixPriceMapper
+from openinflation_parser.parsers.fixprice import FixPriceMapper, FixPriceParser
 
 
 def _iter_children_nodes(node: dict[str, Any]) -> Iterator[dict[str, Any]]:
@@ -135,6 +135,18 @@ def fixprice_live_payloads() -> dict[str, Any]:
             if product is None:
                 raise RuntimeError("Unable to fetch live FixPrice product for tests.")
 
+            product_url = product.get("url")
+            if not isinstance(product_url, str) or not product_url:
+                raise RuntimeError("FixPrice product url is missing.")
+            product_info = await _request_json(
+                operation=f"catalog.product.info[{product_url}]",
+                call=lambda: api.Catalog.Product.info(url=product_url),
+            )
+            if not isinstance(product_info, dict):
+                raise RuntimeError("FixPrice Product.info response is not an object.")
+            merged_product = dict(product)
+            merged_product.update(product_info)
+
             return {
                 "tree": tree,
                 "first_category_node": first_category_node,
@@ -142,6 +154,8 @@ def fixprice_live_payloads() -> dict[str, Any]:
                 "city_row": city_row,
                 "shop_row": shops[0],
                 "product_row": product,
+                "product_info": product_info,
+                "merged_product": merged_product,
                 "used_query": used_query,
             }
 
@@ -183,20 +197,56 @@ def test_map_store_from_live_response(fixprice_live_payloads: dict[str, Any]) ->
 
 
 def test_map_product_from_live_response(fixprice_live_payloads: dict[str, Any]) -> None:
-    product = fixprice_live_payloads["product_row"]
+    product = fixprice_live_payloads["merged_product"]
 
     mapped = FixPriceMapper.map_product(
         product,
+        price_unit=FixPriceMapper.currency_for_country_id(2),
         main_image="images/00001/main.bin",
         gallery_images=["images/00001/gallery_001.bin"],
     )
 
     assert mapped.sku == product.get("sku")
+    assert mapped.description == product.get("description")
     assert mapped.price is not None
     assert mapped.categories_uid
+    assert mapped.price_unit == "RUB"
+    assert mapped.dimension_height == FixPriceMapper._numeric_from_raw(
+        FixPriceMapper._first_variant(product).get("height")
+    )
+    assert mapped.dimension_width == FixPriceMapper._numeric_from_raw(
+        FixPriceMapper._first_variant(product).get("width")
+    )
+    assert mapped.dimension_depth == FixPriceMapper._numeric_from_raw(
+        FixPriceMapper._first_variant(product).get("length")
+    )
     assert mapped.main_image == "images/00001/main.bin"
     assert mapped.images is not None
     assert mapped.images[0] == "images/00001/gallery_001.bin"
+
+
+def test_map_product_from_live_info_response(fixprice_live_payloads: dict[str, Any]) -> None:
+    product = fixprice_live_payloads["product_info"]
+    mapped = FixPriceMapper.map_product(
+        product,
+        price_unit=FixPriceMapper.currency_for_country_id(2),
+    )
+
+    expected_producer_country: str | None = None
+    properties = product.get("properties")
+    if isinstance(properties, list):
+        for row in properties:
+            if not isinstance(row, dict):
+                continue
+            if row.get("alias") == "prodCountry":
+                expected_producer_country = FixPriceMapper._producer_country_from_raw(row.get("value"))
+                break
+
+    assert mapped.sku == product.get("sku")
+    assert mapped.description == product.get("description")
+    assert mapped.producer_country == expected_producer_country
+    assert mapped.price_unit == "RUB"
+    assert mapped.meta_data is not None
 
 
 def test_map_product_does_not_invent_missing_values() -> None:
@@ -250,6 +300,48 @@ def test_country_mapping_covers_live_country_ids(fixprice_live_payloads: dict[st
             assert FixPriceMapper.country_code_from_id(country_id) == code
 
 
+def test_currency_from_country_payload_uses_snapshot_shape() -> None:
+    assert (
+        FixPriceMapper.currency_from_country_payload(
+            {
+                "id": 2,
+                "alias": "RU",
+                "currency": {"title": "Рубль", "symbol": "₽", "symbolFirst": False},
+            }
+        )
+        == "RUB"
+    )
+    assert (
+        FixPriceMapper.currency_from_country_payload(
+            {
+                "id": 8,
+                "alias": "BY",
+                "currency": {"title": "Белорусский рубль", "symbol": "руб", "symbolFirst": False},
+            }
+        )
+        == "BYN"
+    )
+    assert (
+        FixPriceMapper.currency_from_country_payload(
+            {
+                "id": 11,
+                "alias": "RS",
+                "currency": {"title": "Сербский динар", "symbol": "DIN", "symbolFirst": False},
+            }
+        )
+        is None
+    )
+
+
+def test_producer_country_normalization_uses_russian_names_only() -> None:
+    assert FixPriceMapper._producer_country_from_raw(" Россия ") == "RUS"
+    assert (
+        FixPriceMapper._producer_country_from_raw("Объединённые   Арабские, Эмираты.")
+        == "ARE"
+    )
+    assert FixPriceMapper._producer_country_from_raw("China") is None
+
+
 def test_mapper_is_strict_about_contract_types() -> None:
     city = FixPriceMapper.map_city(
         {
@@ -286,3 +378,113 @@ def test_mapper_is_strict_about_contract_types() -> None:
     assert mapped.meta_data is not None
     assert len(mapped.meta_data) == 1
     assert mapped.meta_data[0].value == "yes"
+
+
+def test_collect_products_uses_product_info_with_cache(
+    fixprice_live_payloads: dict[str, Any],
+) -> None:
+    parser = FixPriceParser()
+    product_row = dict(fixprice_live_payloads["product_row"])
+    info_payload = fixprice_live_payloads["product_info"]
+    used_query = fixprice_live_payloads["used_query"]
+    if used_query is None:
+        raise RuntimeError("Used live query is missing.")
+    expected_category_alias, expected_sub_alias = used_query
+
+    class _Response:
+        def __init__(self, payload: Any):
+            self._payload = payload
+
+        def json(self) -> Any:
+            return self._payload
+
+    calls: dict[str, int] = {"info": 0, "countries": 0}
+    product_row.pop("description", None)
+    product_row.pop("properties", None)
+
+    class _ProductService:
+        async def info(
+            self,
+            *,
+            url: str | None = None,
+            category: str | None = None,
+            product_id: int | None = None,
+            slug: str | None = None,
+        ) -> _Response:
+            del category
+            del product_id
+            del slug
+            assert url == info_payload["url"]
+            calls["info"] += 1
+            return _Response(info_payload)
+
+    class _Catalog:
+        Product = _ProductService()
+
+        async def products_list(
+            self,
+            category_alias: str,
+            subcategory_alias: str | None = None,
+            page: int = 1,
+            limit: int = 24,
+            sort: str = "popularity",
+        ) -> _Response:
+            del sort
+            assert category_alias == expected_category_alias
+            assert subcategory_alias == expected_sub_alias
+            assert page in {1, 2}
+            assert limit == 24
+            return _Response([dict(product_row)])
+
+    class _Geolocation:
+        async def countries_list(self, alias: str | None = None) -> _Response:
+            del alias
+            calls["countries"] += 1
+            return _Response(
+                [
+                    {
+                        "id": 2,
+                        "alias": "RU",
+                        "currency": {"title": "Рубль", "symbol": "₽", "symbolFirst": False},
+                    }
+                ]
+            )
+
+    class _Api:
+        Catalog = _Catalog()
+        Geolocation = _Geolocation()
+
+    parser._api = _Api()  # type: ignore[assignment]
+    first_cards = asyncio.run(
+        parser.collect_products(
+            category_alias=expected_category_alias,
+            subcategory_alias=expected_sub_alias,
+            page=1,
+            limit=24,
+        )
+    )
+    second_cards = asyncio.run(
+        parser.collect_products(
+            category_alias=expected_category_alias,
+            subcategory_alias=expected_sub_alias,
+            page=2,
+            limit=24,
+        )
+    )
+
+    assert len(first_cards) == 1
+    assert len(second_cards) == 1
+    assert first_cards[0].description == info_payload["description"]
+    assert first_cards[0].producer_country == FixPriceMapper._producer_country_from_raw(
+        next(
+            (
+                row.get("value")
+                for row in info_payload.get("properties", [])
+                if isinstance(row, dict) and row.get("alias") == "prodCountry"
+            ),
+            None,
+        )
+    )
+    assert first_cards[0].price_unit == "RUB"
+    assert calls["info"] == 1
+    assert calls["countries"] == 1

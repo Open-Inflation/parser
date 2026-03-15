@@ -8,7 +8,7 @@ from openinflation_dataclass import AdministrativeUnit, Card, Category, RetailUn
 from ..base import StoreParser
 from ..runtime import ParserRuntimeMixin
 from .mapper import FixPriceMapper
-from .types import CatalogProductsQuery, FixPriceParserConfig
+from .types import CatalogProductsQuery, CurrencyCode, FixPriceParserConfig
 
 
 LOGGER = logging.getLogger(__name__)
@@ -21,10 +21,14 @@ class FixPriceParser(ParserRuntimeMixin, StoreParser):
         self.config = config or FixPriceParserConfig()
         self._api: Any = None
         self._city_cache_by_country: dict[int, dict[int, AdministrativeUnit]] = {}
+        self._product_info_cache: dict[str, dict[str, Any]] = {}
+        self._currency_by_country_id: dict[int, CurrencyCode | None] = {}
 
     async def __aenter__(self) -> "FixPriceParser":
         from fixprice_api import FixPriceAPI
 
+        self._product_info_cache.clear()
+        self._currency_by_country_id.clear()
         LOGGER.info(
             "Initializing FixPrice API client: country_id=%s city_id=%s include_images=%s timeout_ms=%s",
             self.config.country_id,
@@ -54,6 +58,44 @@ class FixPriceParser(ParserRuntimeMixin, StoreParser):
         if self._api is None:
             raise RuntimeError("FixPriceParser must be used inside 'async with'.")
         return self._api
+
+    async def _collect_product_info(self, *, product_url: str) -> dict[str, Any] | None:
+        cached = self._product_info_cache.get(product_url)
+        if cached is not None:
+            return cached
+
+        api = self._require_api()
+        response = await api.Catalog.Product.info(url=product_url)
+        payload = response.json()
+        if not isinstance(payload, dict):
+            return None
+
+        self._product_info_cache[product_url] = payload
+        return payload
+
+    async def _currency_for_country_id(self, country_id: int | None) -> CurrencyCode | None:
+        if country_id is None:
+            return None
+        if country_id in self._currency_by_country_id:
+            return self._currency_by_country_id[country_id]
+
+        api = self._require_api()
+        response = await api.Geolocation.countries_list()
+        payload = response.json()
+        if isinstance(payload, list):
+            for row in payload:
+                if not isinstance(row, dict):
+                    continue
+                row_country_id = FixPriceMapper._safe_int(row.get("id"))
+                if row_country_id is None:
+                    continue
+                self._currency_by_country_id[row_country_id] = FixPriceMapper.currency_from_country_payload(row)
+
+        if country_id in self._currency_by_country_id:
+            return self._currency_by_country_id[country_id]
+        fallback = FixPriceMapper.currency_for_country_id(country_id)
+        self._currency_by_country_id[country_id] = fallback
+        return fallback
 
     @classmethod
     def _query_categories_uid(cls, query: CatalogProductsQuery) -> list[str] | None:
@@ -241,12 +283,34 @@ class FixPriceParser(ParserRuntimeMixin, StoreParser):
             return []
 
         cards: list[Card] = []
+        enriched_count = 0
+        effective_price_unit = await self._currency_for_country_id(self.config.country_id)
         for raw_product in raw_products:
             if not isinstance(raw_product, dict):
                 continue
+            mapped_payload = raw_product
+            product_url = self._safe_non_empty_str(raw_product.get("url"))
+            if product_url is not None:
+                try:
+                    product_info = await self._collect_product_info(product_url=product_url)
+                    if product_info is not None:
+                        merged_payload = dict(raw_product)
+                        merged_payload.update(product_info)
+                        mapped_payload = merged_payload
+                        enriched_count += 1
+                except Exception as exc:
+                    LOGGER.warning(
+                        "Failed to collect FixPrice product info: category=%s subcategory=%s page=%s url=%s error=%s",
+                        category_alias,
+                        subcategory_alias,
+                        page,
+                        product_url,
+                        exc,
+                    )
+
             main_image, gallery_images = await self._collect_product_images(
                 api=api,
-                product=raw_product,
+                product=mapped_payload,
                 include_images=self.config.include_images,
                 images_field="images",
                 image_url_field="src",
@@ -254,18 +318,20 @@ class FixPriceParser(ParserRuntimeMixin, StoreParser):
             )
             cards.append(
                 FixPriceMapper.map_product(
-                    raw_product,
+                    mapped_payload,
+                    price_unit=effective_price_unit,
                     main_image=main_image,
                     gallery_images=gallery_images,
                     strict_validation=self.config.strict_validation,
                 )
             )
         LOGGER.info(
-            "Collected products page: category=%s subcategory=%s page=%s count=%s",
+            "Collected products page: category=%s subcategory=%s page=%s count=%s enriched=%s",
             category_alias,
             subcategory_alias,
             page,
             len(cards),
+            enriched_count,
         )
         return cards
 

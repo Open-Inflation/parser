@@ -4,22 +4,9 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 
-CountryCode = Literal["BLR", "RUS", "USA", "ARE", "LVA", "GEO", "KGZ", "UZB", "MNG", "SRB", "KAZ"]
-ProducerCountryCode = Literal[
-    "BLR",
-    "RUS",
-    "USA",
-    "ARE",
-    "LVA",
-    "GEO",
-    "KGZ",
-    "UZB",
-    "MNG",
-    "SRB",
-    "KAZ",
-    "CHN",
-]
-CurrencyCode = Literal["BYN", "RUB", "USD", "EUR", "AED", "GEL", "KGS", "UZS", "MNT", "RSD", "KZT"]
+CountryCode = Literal["BLR", "RUS", "USA", "ARE"]
+ProducerCountryCode = Literal["BLR", "RUS", "USA", "ARE", "CHN"]
+CurrencyCode = Literal["BYN", "RUB", "USD", "EUR", "AED"]
 
 
 @dataclass(slots=True)

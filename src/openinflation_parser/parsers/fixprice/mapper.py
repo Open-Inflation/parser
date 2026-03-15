@@ -20,32 +20,49 @@ class FixPriceMapper:
     """Mappers from FixPrice API contracts to openinflation dataclasses."""
 
     COUNTRY_ID_TO_CODE: dict[int, CountryCode] = {
-        7: "LVA",
         2: "RUS",
-        4: "GEO",
-        5: "KGZ",
-        6: "UZB",
-        3: "KAZ",
         8: "BLR",
-        9: "MNG",
         10: "ARE",
-        11: "SRB",
     }
     COUNTRY_TO_CURRENCY: dict[CountryCode, CurrencyCode] = {
         "RUS": "RUB",
         "BLR": "BYN",
         "ARE": "AED",
         "USA": "USD",
-        "LVA": "EUR",
-        "GEO": "GEL",
-        "KGZ": "KGS",
-        "UZB": "UZS",
-        "MNG": "MNT",
-        "SRB": "RSD",
-        "KAZ": "KZT",
+    }
+    COUNTRY_ALIAS_TO_CURRENCY: dict[str, CurrencyCode] = {
+        "RU": "RUB",
+        "BY": "BYN",
+        "AE": "AED",
+        "LV": "EUR",
+        "US": "USD",
+    }
+    PRODUCER_COUNTRY_NAMES: dict[str, ProducerCountryCode] = {
+        "беларусь": "BLR",
+        "белоруссия": "BLR",
+        "республика беларусь": "BLR",
+        "россия": "RUS",
+        "российская федерация": "RUS",
+        "сша": "USA",
+        "соединенные штаты": "USA",
+        "соединенные штаты америки": "USA",
+        "оаэ": "ARE",
+        "объединенные арабские эмираты": "ARE",
+        "китай": "CHN",
+        "кнр": "CHN",
+        "китайская народная республика": "CHN",
+    }
+    PRICE_UNIT_ALIASES: dict[str, CurrencyCode] = {
+        "BYN": "BYN",
+        "RUB": "RUB",
+        "USD": "USD",
+        "EUR": "EUR",
+        "AED": "AED",
     }
     HHMM_PATTERN = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
     DECIMAL_PATTERN = re.compile(r"^-?\d+(?:\.\d+)?$")
+    COUNTRY_NAME_CLEAN_PATTERN = re.compile(r"[^а-я0-9]+")
+    MULTISPACE_PATTERN = re.compile(r"\s+")
     CITY_PREFIXES = {"г", "г.", "город", "city"}
     VILLAGE_PREFIXES = {
         "п",
@@ -97,6 +114,13 @@ class FixPriceMapper:
             return None
         return cls.COUNTRY_TO_CURRENCY.get(country)
 
+    @classmethod
+    def currency_from_country_payload(cls, country: dict[str, Any]) -> CurrencyCode | None:
+        country_alias = cls._safe_str(country.get("alias"))
+        if country_alias is None:
+            return None
+        return cls.COUNTRY_ALIAS_TO_CURRENCY.get(country_alias.strip().upper())
+
     @staticmethod
     def _safe_str(value: Any) -> str | None:
         return value if isinstance(value, str) else None
@@ -117,6 +141,24 @@ class FixPriceMapper:
     def _safe_int(cls, value: Any) -> int | None:
         return value if isinstance(value, int) and not isinstance(value, bool) else None
 
+    @classmethod
+    def _numeric_from_raw(cls, value: Any) -> float | None:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            token = value.strip().replace(",", ".")
+            if not token:
+                return None
+            if cls.DECIMAL_PATTERN.fullmatch(token) is None:
+                return None
+            try:
+                return float(token)
+            except ValueError:
+                return None
+        return None
+
     @staticmethod
     def _id_to_str(value: Any) -> str | None:
         if isinstance(value, bool):
@@ -129,14 +171,7 @@ class FixPriceMapper:
 
     @classmethod
     def _price_str_to_float(cls, value: Any) -> float | None:
-        if not isinstance(value, str):
-            return None
-        if not cls.DECIMAL_PATTERN.fullmatch(value):
-            return None
-        try:
-            return float(value)
-        except ValueError:
-            return None
+        return cls._numeric_from_raw(value)
 
     @classmethod
     def _settlement_type(cls, prefix: Any) -> Literal["village", "city"] | None:
@@ -202,6 +237,132 @@ class FixPriceMapper:
         if token in {"шт", "pce", "piece", "pcs"}:
             return "PCE"
         return None
+
+    @classmethod
+    def _normalize_country_name(cls, value: str) -> str:
+        normalized = value.strip().lower().replace("ё", "е")
+        normalized = cls.COUNTRY_NAME_CLEAN_PATTERN.sub(" ", normalized)
+        normalized = cls.MULTISPACE_PATTERN.sub(" ", normalized).strip()
+        return normalized
+
+    @classmethod
+    def _producer_country_from_raw(cls, value: Any) -> ProducerCountryCode | None:
+        token = cls._safe_str(value)
+        if token is None:
+            return None
+        normalized = cls._normalize_country_name(token)
+        if not normalized:
+            return None
+        return cls.PRODUCER_COUNTRY_NAMES.get(normalized)
+
+    @classmethod
+    def _price_unit_from_raw(cls, value: Any) -> CurrencyCode | None:
+        token = cls._safe_str(value)
+        if token is None:
+            return None
+        normalized = token.strip().upper()
+        if not normalized:
+            return None
+        return cls.PRICE_UNIT_ALIASES.get(normalized)
+
+    @classmethod
+    def _metadata_from_product(
+        cls,
+        product: dict[str, Any],
+        *,
+        strict_validation: bool,
+    ) -> list[MetaData] | None:
+        prepared_meta: list[MetaData] = []
+        seen: set[tuple[str, str, int | float | str]] = set()
+
+        def append_metadata(*, raw_name: Any, raw_alias: Any, raw_value: Any) -> None:
+            name = cls._safe_str(raw_name)
+            alias = cls._safe_str(raw_alias)
+            if name is None or alias is None:
+                return
+            if isinstance(raw_value, bool):
+                return
+            if not isinstance(raw_value, (int, float, str)):
+                return
+
+            key = (name, alias, raw_value)
+            if key in seen:
+                return
+            seen.add(key)
+            prepared_meta.append(
+                cls._build(
+                    MetaData,
+                    {"name": name, "alias": alias, "value": raw_value},
+                    strict_validation=strict_validation,
+                )
+            )
+
+        raw_meta = product.get("metaData")
+        if isinstance(raw_meta, list):
+            for item in raw_meta:
+                if not isinstance(item, dict):
+                    continue
+                append_metadata(
+                    raw_name=item.get("name"),
+                    raw_alias=item.get("alias"),
+                    raw_value=item.get("value"),
+                )
+
+        for block_key in ("properties", "extraDescriptions"):
+            block = product.get(block_key)
+            if not isinstance(block, list):
+                continue
+            for item in block:
+                if not isinstance(item, dict):
+                    continue
+                append_metadata(
+                    raw_name=item.get("title"),
+                    raw_alias=item.get("alias"),
+                    raw_value=item.get("value"),
+                )
+
+        return prepared_meta or None
+
+    @classmethod
+    def _first_property_value(cls, product: dict[str, Any], *, alias: str) -> Any:
+        properties = product.get("properties")
+        if not isinstance(properties, list):
+            return None
+        for item in properties:
+            if not isinstance(item, dict):
+                continue
+            if item.get("alias") == alias:
+                return item.get("value")
+        return None
+
+    @classmethod
+    def _first_extra_description_value(cls, product: dict[str, Any], *, alias: str) -> Any:
+        extra_descriptions = product.get("extraDescriptions")
+        if not isinstance(extra_descriptions, list):
+            return None
+        for item in extra_descriptions:
+            if not isinstance(item, dict):
+                continue
+            if item.get("alias") == alias:
+                return item.get("value")
+        return None
+
+    @classmethod
+    def _category_uid_from_product(cls, product: dict[str, Any]) -> str | None:
+        category = product.get("category")
+        if isinstance(category, dict):
+            return cls._id_to_str(category.get("id"))
+        return cls._id_to_str(category)
+
+    @classmethod
+    def _first_variant(cls, product: dict[str, Any]) -> dict[str, Any]:
+        variants = product.get("variants")
+        if not isinstance(variants, list):
+            return {}
+        for item in variants:
+            if isinstance(item, dict):
+                return item
+        return {}
 
     @classmethod
     def map_category_node(
@@ -348,13 +509,13 @@ class FixPriceMapper:
         cls,
         product: dict[str, Any],
         *,
+        price_unit: CurrencyCode | None = None,
         main_image: str | None = None,
         gallery_images: list[str] | None = None,
         strict_validation: bool = False,
     ) -> Card:
         sku = cls._safe_str(product.get("sku"))
-        category = product.get("category") if isinstance(product.get("category"), dict) else {}
-        category_id = cls._id_to_str(category.get("id"))
+        category_id = cls._category_uid_from_product(product)
         categories_uid = [category_id] if category_id is not None else None
 
         source_slug = cls._safe_str(product.get("url"))
@@ -363,35 +524,60 @@ class FixPriceMapper:
             source_page_url = f"https://fix-price.com/catalog/{source_slug.lstrip('/')}"
 
         unit = cls._unit_from_raw(product.get("unit"))
+        if unit is None:
+            unit = cls._unit_from_raw(product.get("unitType"))
         available_raw = product.get("inStock")
-        available_count = cls._safe_int(available_raw) if unit == "PCE" else cls._safe_float(available_raw)
+        available_count = (
+            cls._safe_int(available_raw)
+            if unit == "PCE"
+            else cls._safe_float(available_raw)
+        )
 
-        raw_meta = product.get("metaData")
-        metadata: list[MetaData] | None = None
-        if isinstance(raw_meta, list):
-            prepared_meta: list[MetaData] = []
-            for item in raw_meta:
-                if not isinstance(item, dict):
-                    continue
-                name = cls._safe_str(item.get("name"))
-                alias = cls._safe_str(item.get("alias"))
-                value = item.get("value")
-                if name is None or alias is None or value is None:
-                    continue
-                if isinstance(value, bool):
-                    continue
-                if not isinstance(value, (int, float, str)):
-                    continue
-                prepared_meta.append(
-                    cls._build(
-                        MetaData,
-                        {"name": name, "alias": alias, "value": value},
-                        strict_validation=strict_validation,
-                    )
-                )
-            metadata = prepared_meta or None
+        metadata = cls._metadata_from_product(
+            product,
+            strict_validation=strict_validation,
+        )
 
-        brand_block = product.get("brand") if isinstance(product.get("brand"), dict) else {}
+        brand_block = product.get("brand")
+        brand: str | None = None
+        if isinstance(brand_block, dict):
+            brand = cls._safe_str(brand_block.get("title"))
+        elif isinstance(brand_block, str):
+            brand = brand_block
+
+        producer_name = cls._safe_str(
+            cls._first_property_value(product, alias="manufacturer")
+        )
+        producer_country = cls._producer_country_from_raw(
+            cls._first_property_value(product, alias="prodCountry")
+        )
+        composition = cls._safe_str(
+            cls._first_extra_description_value(product, alias="composition")
+        )
+
+        variant = cls._first_variant(product)
+        dimension_height = cls._numeric_from_raw(variant.get("height"))
+        dimension_width = cls._numeric_from_raw(variant.get("width"))
+        dimension_depth = cls._numeric_from_raw(variant.get("length"))
+
+        package_quantity_net = None
+        package_quantity_gross = None
+        package_unit = None
+
+        effective_price_unit = cls._price_unit_from_raw(product.get("priceUnit"))
+        if effective_price_unit is None:
+            effective_price_unit = price_unit
+
+        price = cls._price_str_to_float(product.get("price"))
+        if price is None:
+            price = cls._price_str_to_float(variant.get("price"))
+        loyal_price = (
+            cls._price_str_to_float(product.get("specialPrice", {}).get("price"))
+            if isinstance(product.get("specialPrice"), dict)
+            else None
+        )
+        discount_price = None
+
         card_payload: dict[str, Any] = {
             "sku": sku,
             "plu": cls._safe_str(product.get("plu")),
@@ -404,27 +590,27 @@ class FixPriceMapper:
             "season": cls._safe_bool(product.get("isSeason")),
             "hit": cls._safe_bool(product.get("isHit")),
             "data_matrix": cls._safe_bool(product.get("isQRMark")),
-            "brand": cls._safe_str(brand_block.get("title")),
-            "producer_name": cls._safe_str(product.get("producerName")),
-            "producer_country": cls._safe_str(product.get("producerCountry")),
-            "composition": cls._safe_str(product.get("composition")),
+            "brand": brand,
+            "producer_name": producer_name,
+            "producer_country": producer_country,
+            "composition": composition,
             "meta_data": metadata,
             "expiration_date_in_days": cls._safe_int(product.get("expirationDateInDays")),
-            "rating": cls._safe_float(product.get("rating")),
+            "rating": cls._numeric_from_raw(product.get("rating")),
             "reviews_count": cls._safe_int(product.get("reviewsCount")),
-            "price": cls._price_str_to_float(product.get("price")),
-            "discount_price": None,
-            "loyal_price": (
-                cls._price_str_to_float(product.get("specialPrice", {}).get("price"))
-                if product.get("specialPrice") is not None
-                else None
-            ),
+            "price": price,
+            "discount_price": discount_price,
+            "loyal_price": loyal_price,
             "wholesale_price": None,
-            "price_unit": cls._safe_str(product.get("priceUnit")),
+            "price_unit": effective_price_unit,
             "unit": unit,
             "available_count": available_count,
-            "package_quantity": cls._safe_float(product.get("packageQuantity")),
-            "package_unit": cls._safe_str(product.get("packageUnit")),
+            "package_quantity_net": package_quantity_net,
+            "package_quantity_gross": package_quantity_gross,
+            "package_unit": package_unit,
+            "dimension_height": dimension_height,
+            "dimension_width": dimension_width,
+            "dimension_depth": dimension_depth,
             "categories_uid": categories_uid,
             "main_image": main_image,
             "images": gallery_images if gallery_images else None,
