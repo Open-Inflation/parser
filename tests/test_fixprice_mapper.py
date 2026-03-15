@@ -267,7 +267,7 @@ def test_map_product_does_not_invent_missing_values() -> None:
     assert mapped.categories_uid is None
 
 
-def test_map_product_sets_package_quantity_gross_from_variant_weight() -> None:
+def test_map_product_sets_package_weight_gross_from_variant_weight() -> None:
     mapped = FixPriceMapper.map_product(
         product={
             "sku": "SKU-WEIGHT",
@@ -286,11 +286,11 @@ def test_map_product_sets_package_quantity_gross_from_variant_weight() -> None:
     )
 
     assert mapped.package_quantity_net is None
-    assert mapped.package_quantity_gross == 159.0
+    assert mapped.package_weight_gross == 0.159
     assert mapped.package_unit == "KGM"
 
 
-def test_map_product_sets_package_quantity_gross_even_for_non_weight_unit() -> None:
+def test_map_product_sets_package_weight_gross_even_for_non_weight_unit() -> None:
     mapped = FixPriceMapper.map_product(
         product={
             "sku": "SKU-NON-WEIGHT",
@@ -301,8 +301,8 @@ def test_map_product_sets_package_quantity_gross_even_for_non_weight_unit() -> N
         }
     )
 
-    assert mapped.unit == "KGM"
-    assert mapped.package_quantity_gross == 159.0
+    assert mapped.unit_net == "KGM"
+    assert mapped.package_weight_gross == 0.159
     assert mapped.package_unit == "KGM"
 
 
@@ -412,7 +412,7 @@ def test_mapper_is_strict_about_contract_types() -> None:
             "category": {"id": 99},
         }
     )
-    assert mapped.unit == "KGM"
+    assert mapped.unit_net == "KGM"
     assert mapped.available_count is None
     assert mapped.price == 10.5
     assert mapped.meta_data is not None

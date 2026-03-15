@@ -524,7 +524,6 @@ class FixPriceMapper:
         if source_slug:
             source_page_url = f"https://fix-price.com/catalog/{source_slug.lstrip('/')}"
 
-        unit = "KGM"
         available_raw = product.get("inStock")
         available_count = cls._safe_float(available_raw)
 
@@ -554,9 +553,10 @@ class FixPriceMapper:
         dimension_height = cls._numeric_from_raw(variant.get("height"))
         dimension_width = cls._numeric_from_raw(variant.get("width"))
         dimension_depth = cls._numeric_from_raw(variant.get("length"))
-        package_quantity_gross = (
-            cls._numeric_from_raw(variant.get("weight"))
-            if unit == "KGM"
+        package_weight_grams = cls._numeric_from_raw(variant.get("weight"))
+        package_weight_gross = (
+            package_weight_grams / 1000.0
+            if package_weight_grams is not None
             else None
         )
 
@@ -599,11 +599,12 @@ class FixPriceMapper:
             "loyal_price": loyal_price,
             "wholesale_price": None,
             "price_unit": effective_price_unit,
-            "unit": unit,
+            "unit_net": None,
             "available_count": available_count,
             "package_quantity_net": None,
-            "package_quantity_gross": package_quantity_gross,
-            "package_unit": "KGM" if package_quantity_gross is not None else None,
+            "package_weight_gross": package_weight_gross,
+            "package_unit": "KGM" if package_weight_gross is not None else None,
+            "package_count": None,
             "dimension_height": dimension_height,
             "dimension_width": dimension_width,
             "dimension_depth": dimension_depth,

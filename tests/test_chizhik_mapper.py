@@ -120,7 +120,7 @@ def _expected_from_product_payload(product: dict[str, Any]) -> dict[str, Any]:
         "rating": _to_float(product.get("rating")),
         "reviews_count": _to_int(product.get("reviews_count")),
         "price": _to_float(product.get("price")),
-        "unit": ChizhikMapper._unit_from_raw(product.get("base_unit")),
+        "unit_net": ChizhikMapper._unit_from_raw(product.get("base_unit")),
         "brand": _to_str(meta.get("brand_name")),
         "producer_name": _to_str(meta.get("producer_name")),
         "producer_country": _producer_country_from_meta(meta.get("country")),
@@ -250,7 +250,7 @@ def test_map_product_from_live_list_response(chizhik_live_payloads: dict[str, An
     assert mapped.rating == expected["rating"]
     assert mapped.reviews_count == expected["reviews_count"]
     assert mapped.price == expected["price"]
-    assert mapped.unit == expected["unit"]
+    assert mapped.unit_net == expected["unit_net"]
     assert mapped.brand == expected["brand"]
     assert mapped.producer_name == expected["producer_name"]
     assert mapped.producer_country == expected["producer_country"]
@@ -278,7 +278,7 @@ def test_map_product_from_live_info_response(chizhik_live_payloads: dict[str, An
     assert mapped.rating == expected["rating"]
     assert mapped.reviews_count == expected["reviews_count"]
     assert mapped.price == expected["price"]
-    assert mapped.unit == expected["unit"]
+    assert mapped.unit_net == expected["unit_net"]
     assert mapped.brand == expected["brand"]
     assert mapped.producer_name == expected["producer_name"]
     assert mapped.producer_country == expected["producer_country"]
