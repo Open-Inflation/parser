@@ -85,6 +85,34 @@ class OrchestratorDownloadsMixin:
                 return None
         return None
 
+    @classmethod
+    def _normalize_category_progress(cls, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+
+        total_raw = cls._safe_int(value.get("categories_total"))
+        done_raw = cls._safe_int(value.get("categories_done"))
+        total = max(0, int(total_raw or 0))
+        done = max(0, int(done_raw or 0))
+        if total > 0:
+            done = min(done, total)
+        elif done > 0:
+            total = done
+
+        current_alias = None
+        alias_value = value.get("current_category_alias")
+        if alias_value is not None:
+            token = str(alias_value).strip()
+            current_alias = token or None
+
+        updated_at = str(value.get("updated_at", "")).strip() or utc_now_iso()
+        return {
+            "categories_total": total,
+            "categories_done": done,
+            "current_category_alias": current_alias,
+            "updated_at": updated_at,
+        }
+
     @staticmethod
     def _iso_to_timestamp(value: Any) -> int | None:
         if not isinstance(value, str):
@@ -185,6 +213,11 @@ class OrchestratorDownloadsMixin:
     def _present_job(self, job_state: dict[str, Any]) -> dict[str, Any]:
         payload = dict(job_state)
         payload.pop("download_expires_ts", None)
+        normalized_progress = self._normalize_category_progress(payload.get("category_progress"))
+        if normalized_progress is None:
+            payload.pop("category_progress", None)
+        else:
+            payload["category_progress"] = normalized_progress
         download_data = self._job_download_data(job_state)
         if download_data is not None:
             payload.update(download_data)

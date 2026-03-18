@@ -7,6 +7,7 @@ import logging
 import os
 import shutil
 import traceback
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -77,6 +78,7 @@ async def execute_store_job(
     *,
     worker_id: int,
     worker_log_path: str | None = None,
+    progress_callback: Callable[[int, int, str | None], None] | None = None,
 ) -> tuple[str, str]:
     image_cache_dir = _worker_job_cache_dir(job=job, worker_id=worker_id)
     if image_cache_dir.exists():
@@ -148,6 +150,7 @@ async def execute_store_job(
                 product_queries,
                 page_limit=page_limit,
                 items_per_page=job.products_per_page,
+                progress_callback=progress_callback,
             )
             LOGGER.info(
                 "Worker %s job %s collected products=%s page_limit=%s",
@@ -328,6 +331,42 @@ def worker_process_loop(
             worker_will_exit = (jobs_processed + 1) >= max_jobs_limit
             should_exit_after_job = False
             try:
+                def _report_progress(
+                    categories_total: int,
+                    categories_done: int,
+                    current_category_alias: str | None,
+                ) -> None:
+                    try:
+                        safe_total = max(0, int(categories_total))
+                    except Exception:
+                        safe_total = 0
+                    try:
+                        safe_done = max(0, int(categories_done))
+                    except Exception:
+                        safe_done = 0
+                    if safe_total > 0:
+                        safe_done = min(safe_done, safe_total)
+                    else:
+                        safe_done = 0
+                    alias = None
+                    if current_category_alias is not None:
+                        token = str(current_category_alias).strip()
+                        alias = token or None
+                    with contextlib.suppress(Exception):
+                        result_queue.put(
+                            {
+                                "event": "progress",
+                                "status": "running",
+                                "worker_id": worker_id,
+                                "worker_pid": os.getpid(),
+                                "job_id": job.job_id,
+                                "timestamp": utc_now_iso(),
+                                "categories_total": safe_total,
+                                "categories_done": safe_done,
+                                "current_category_alias": alias,
+                            }
+                        )
+
                 with _job_span_context(worker_id=worker_id, job=job):
                     json_path, json_gz_path = asyncio.run(
                         execute_store_job(
@@ -335,6 +374,7 @@ def worker_process_loop(
                             proxy=proxy,
                             worker_id=worker_id,
                             worker_log_path=str(worker_log_path) if worker_log_path is not None else None,
+                            progress_callback=_report_progress,
                         )
                     )
                 result_queue.put(

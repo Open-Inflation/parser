@@ -45,6 +45,12 @@ class OrchestratorRequestsMixin:
             alive = process.is_alive()
             busy = bool(self._worker_busy.get(worker_id, False))
             job_id = self._worker_current_job.get(worker_id)
+            job_state = self._job_store.get(str(job_id)) if isinstance(job_id, str) and job_id else None
+            category_progress = (
+                self._normalize_category_progress(job_state.get("category_progress"))
+                if isinstance(job_state, dict)
+                else None
+            )
             if alive and busy and job_id:
                 state = "running"
             elif alive and not busy and job_id is None:
@@ -64,6 +70,7 @@ class OrchestratorRequestsMixin:
                     "busy": busy,
                     "job_id": job_id,
                     "state": state,
+                    "category_progress": category_progress,
                 }
             )
         return rows

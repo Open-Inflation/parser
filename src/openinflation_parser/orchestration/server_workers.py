@@ -175,6 +175,26 @@ class OrchestratorWorkersMixin:
                 return None
         return None
 
+    @staticmethod
+    def _non_negative_int_from_value(value: Any, *, default: int = 0) -> int:
+        if isinstance(value, bool):
+            return max(0, int(default))
+        if isinstance(value, int):
+            return max(0, value)
+        if isinstance(value, float):
+            if value.is_integer():
+                return max(0, int(value))
+            return max(0, int(default))
+        if isinstance(value, str):
+            token = value.strip()
+            if not token:
+                return max(0, int(default))
+            try:
+                return max(0, int(token))
+            except ValueError:
+                return max(0, int(default))
+        return max(0, int(default))
+
     def _pair_for_job_and_worker(
         self,
         *,
@@ -480,6 +500,40 @@ class OrchestratorWorkersMixin:
                     job_id,
                     event.get("worker_id"),
                 )
+                continue
+
+            if event_name == "progress":
+                current_status = str(job_state.get("status", "")).strip().lower()
+                if current_status in {"success", "error", "cancelled"}:
+                    continue
+
+                event_worker_id = self._worker_id_from_value(event.get("worker_id"))
+                if event_worker_id is not None:
+                    job_state["worker_id"] = event_worker_id
+                event_worker_pid = self._worker_pid_from_value(event.get("worker_pid"))
+                if event_worker_pid is not None:
+                    job_state["worker_pid"] = event_worker_pid
+
+                categories_total = self._non_negative_int_from_value(event.get("categories_total"))
+                categories_done = self._non_negative_int_from_value(event.get("categories_done"))
+                if categories_total > 0:
+                    categories_done = min(categories_done, categories_total)
+                else:
+                    categories_done = 0
+
+                category_alias = None
+                if event.get("current_category_alias") is not None:
+                    category_alias_token = str(event.get("current_category_alias")).strip()
+                    category_alias = category_alias_token or None
+
+                updated_at = str(event.get("timestamp", "")).strip() or utc_now_iso()
+                job_state["category_progress"] = {
+                    "categories_total": categories_total,
+                    "categories_done": categories_done,
+                    "current_category_alias": category_alias,
+                    "updated_at": updated_at,
+                }
+                self._job_store.upsert(job_state)
                 continue
 
             if event_name == "finished":

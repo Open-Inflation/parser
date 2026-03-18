@@ -996,6 +996,109 @@ def test_try_dispatch_skips_worker_with_active_slot_even_if_busy_false() -> None
     assert server._worker_current_job[1] == "job-already-assigned"
 
 
+def test_collect_results_updates_category_progress_for_running_job() -> None:
+    defaults = _job_defaults()
+    server = OrchestratorServer(
+        host="127.0.0.1",
+        port=8765,
+        worker_count=1,
+        proxies=[],
+        defaults=defaults,
+        jobs_db_path=None,
+    )
+    server._job_store.upsert(
+        {
+            "job_id": "job-progress-1",
+            "status": "running",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "started_at": "2026-01-01T00:00:10+00:00",
+            "worker_id": 1,
+        }
+    )
+
+    result_queue: Queue = Queue()
+    result_queue.put(
+        {
+            "event": "progress",
+            "status": "running",
+            "job_id": "job-progress-1",
+            "worker_id": 1,
+            "worker_pid": 7001,
+            "timestamp": "2026-01-01T00:00:11+00:00",
+            "categories_total": 42,
+            "categories_done": 7,
+            "current_category_alias": "fruits",
+        }
+    )
+    result_queue.put(None)
+    server._result_queue = result_queue
+
+    asyncio.run(server._collect_results())
+
+    state = server._job_store.get("job-progress-1")
+    assert state is not None
+    assert state["status"] == "running"
+    assert state.get("worker_id") == 1
+    assert state.get("worker_pid") == 7001
+    progress = state.get("category_progress")
+    assert isinstance(progress, dict)
+    assert progress["categories_total"] == 42
+    assert progress["categories_done"] == 7
+    assert progress["current_category_alias"] == "fruits"
+    assert progress["updated_at"] == "2026-01-01T00:00:11+00:00"
+
+
+def test_workers_action_exposes_category_progress_for_running_worker() -> None:
+    defaults = _job_defaults()
+    server = OrchestratorServer(
+        host="127.0.0.1",
+        port=8765,
+        worker_count=1,
+        proxies=[],
+        defaults=defaults,
+        jobs_db_path=None,
+    )
+
+    class _AliveProcess:
+        pid = 8101
+
+        @staticmethod
+        def is_alive() -> bool:
+            return True
+
+    server._workers = [_AliveProcess()]  # type: ignore[assignment]
+    server._worker_busy = {1: True}
+    server._worker_current_job = {1: "job-progress-2"}
+    server._job_store.upsert(
+        {
+            "job_id": "job-progress-2",
+            "status": "running",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "started_at": "2026-01-01T00:00:10+00:00",
+            "worker_id": 1,
+            "category_progress": {
+                "categories_total": 10,
+                "categories_done": 4,
+                "current_category_alias": "tea",
+                "updated_at": "2026-01-01T00:00:11+00:00",
+            },
+        }
+    )
+
+    response = asyncio.run(server._dispatch(parse_request({"action": "workers"})))
+    assert response["ok"] is True
+    workers = response.get("workers")
+    assert isinstance(workers, list)
+    assert len(workers) == 1
+    row = workers[0]
+    assert row["state"] == "running"
+    progress = row.get("category_progress")
+    assert isinstance(progress, dict)
+    assert progress["categories_total"] == 10
+    assert progress["categories_done"] == 4
+    assert progress["current_category_alias"] == "tea"
+
+
 def test_present_job_contains_signed_download_url(tmp_path: Path) -> None:
     defaults = _job_defaults()
     server = OrchestratorServer(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 import logging
 from typing import Any
 
@@ -179,6 +180,7 @@ class FixPriceParser(ParserRuntimeMixin, StoreParser):
         *,
         page_limit: int,
         items_per_page: int = 24,
+        progress_callback: Callable[[int, int, str | None], None] | None = None,
     ) -> list[Card]:
         safe_page_limit = max(1, page_limit)
         safe_items_per_page = max(1, min(27, items_per_page))
@@ -186,7 +188,11 @@ class FixPriceParser(ParserRuntimeMixin, StoreParser):
         all_products: list[Card] = []
         sku_to_index: dict[str, int] = {}
 
-        for query in queries:
+        total_queries = len(queries)
+        for query_index, query in enumerate(queries, start=1):
+            if progress_callback is not None:
+                current_alias = query.subcategory_alias or query.category_alias
+                progress_callback(total_queries, query_index - 1, current_alias)
             query_categories_uid = self._query_categories_uid(query)
             for page in range(1, safe_page_limit + 1):
                 page_products = await self.collect_products(
@@ -228,6 +234,8 @@ class FixPriceParser(ParserRuntimeMixin, StoreParser):
                     if sku is not None:
                         sku_to_index[sku] = len(all_products)
                     all_products.append(enriched_card)
+        if progress_callback is not None and total_queries > 0:
+            progress_callback(total_queries, total_queries, None)
         LOGGER.info(
             "Collected products for queries: queries=%s unique_products=%s",
             len(queries),
