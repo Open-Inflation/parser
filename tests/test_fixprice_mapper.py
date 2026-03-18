@@ -177,6 +177,7 @@ def test_map_city_from_live_response(fixprice_live_payloads: dict[str, Any]) -> 
     mapped = FixPriceMapper.map_city(city, country_id=2)
 
     assert mapped.name == city.get("title")
+    assert mapped.alias == str(city.get("id"))
     assert mapped.country == "RUS"
     assert mapped.longitude == city.get("longitude")
     assert mapped.latitude == city.get("latitude")

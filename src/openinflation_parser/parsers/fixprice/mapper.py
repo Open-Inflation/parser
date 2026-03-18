@@ -422,13 +422,16 @@ class FixPriceMapper:
         city_name = cls._safe_str(city.get("title"))
         if city_name is None:
             city_name = cls._safe_str(city.get("name"))
+        city_alias = cls._id_to_str(city.get("id"))
+        if city_alias is None:
+            city_alias = cls._safe_str(city.get("alias"))
 
         return cls._build(
             AdministrativeUnit,
             {
                 "settlement_type": cls._settlement_type(city.get("prefix")),
                 "name": city_name,
-                "alias": cls._safe_str(city.get("alias")),
+                "alias": city_alias,
                 "country": country,
                 "region": cls._safe_str(city.get("regionTitle")),
                 "longitude": cls._safe_float(city.get("longitude")),
