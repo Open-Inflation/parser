@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from .requests import (
+    CancelJobRequest,
     HelpRequest,
     JobsRequest,
     ParsedRequest,
@@ -120,6 +121,13 @@ class OrchestratorRequestsMixin:
                     "error": "Action 'stream_job_log' is a streaming command and must be handled in websocket session mode.",
                 }
 
+            if isinstance(request, CancelJobRequest):
+                payload = await self._cancel_job(
+                    job_id=request.job_id.strip(),
+                    reason="Cancelled by API request",
+                )
+                return {"ok": True, "action": request.action} | payload
+
             if isinstance(request, ShutdownRequest):
                 self._stop_event.set()
                 return {
@@ -140,6 +148,7 @@ class OrchestratorRequestsMixin:
                         "jobs",
                         "workers",
                         "stream_job_log",
+                        "cancel_job",
                         "shutdown",
                     ],
                 }

@@ -237,7 +237,7 @@ class OrchestratorDownloadsMixin:
         sent_waiting = False
         offset = 0
         pending_fragment = ""
-        terminal_statuses = {"success", "error"}
+        terminal_statuses = {"success", "error", "cancelled"}
 
         while True:
             job_state = self._job_store.get(job_id)

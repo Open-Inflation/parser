@@ -269,6 +269,82 @@ class OrchestratorWorkersMixin:
             )
         return dispatched
 
+    def _worker_id_for_job(self, *, job_id: str, fallback: int | None) -> int | None:
+        if fallback is not None:
+            return fallback
+        for worker_id, current_job_id in self._worker_current_job.items():
+            if current_job_id == job_id:
+                return worker_id
+        return None
+
+    async def _cancel_job(self, *, job_id: str, reason: str) -> dict[str, Any]:
+        normalized_job_id = str(job_id).strip()
+        if not normalized_job_id:
+            raise ValueError("Field 'job_id' is required.")
+
+        job_state = self._job_store.get(normalized_job_id)
+        if job_state is None:
+            raise ValueError("Job not found.")
+
+        current_status = str(job_state.get("status", "unknown")).strip().lower()
+        if current_status in {"success", "error", "cancelled"}:
+            return {
+                "job_id": normalized_job_id,
+                "status": current_status,
+                "already_terminal": True,
+            }
+
+        finished_at = utc_now_iso()
+        message = reason.strip() or "Cancelled by API request"
+
+        if current_status == "queued":
+            self._pending_jobs = [item for item in self._pending_jobs if item.job_id != normalized_job_id]
+            job_state["status"] = "cancelled"
+            job_state["finished_at"] = finished_at
+            job_state["message"] = message
+            self._job_store.upsert(job_state)
+            fallback_worker_id = self._worker_id_from_value(job_state.get("worker_id"))
+            worker_id = self._worker_id_for_job(job_id=normalized_job_id, fallback=fallback_worker_id)
+            self._release_worker_slot_for_job(job_id=normalized_job_id, worker_id=worker_id)
+            await self._try_dispatch_jobs()
+            LOGGER.info("Cancelled queued job: id=%s", normalized_job_id)
+            return {"job_id": normalized_job_id, "status": "cancelled"}
+
+        if current_status == "running":
+            fallback_worker_id = self._worker_id_from_value(job_state.get("worker_id"))
+            worker_id = self._worker_id_for_job(job_id=normalized_job_id, fallback=fallback_worker_id)
+
+            job_state["status"] = "cancelled"
+            job_state["finished_at"] = finished_at
+            job_state["message"] = message
+            self._job_store.upsert(job_state)
+
+            if worker_id is not None and 1 <= worker_id <= len(self._workers):
+                process = self._workers[worker_id - 1]
+                self._release_worker_slot_for_job(job_id=normalized_job_id, worker_id=worker_id)
+                self._worker_busy[worker_id] = False
+                self._worker_current_job[worker_id] = None
+
+                if process.is_alive():
+                    process.terminate()
+                    await asyncio.to_thread(process.join, 2.0)
+                if process.is_alive():
+                    process.kill()
+                    await asyncio.to_thread(process.join, 2.0)
+
+                if not self._is_stopped:
+                    latest_process = self._workers[worker_id - 1]
+                    if latest_process is process:
+                        self._spawn_worker(worker_id, replace=True)
+            else:
+                self._release_worker_slot_for_job(job_id=normalized_job_id, worker_id=worker_id)
+
+            await self._try_dispatch_jobs()
+            LOGGER.info("Cancelled running job: id=%s worker_id=%s", normalized_job_id, worker_id)
+            return {"job_id": normalized_job_id, "status": "cancelled"}
+
+        raise ValueError(f"Job cannot be cancelled from status={current_status!r}.")
+
     def _reconcile_orphaned_running_jobs(self) -> int:
         worker_alive = {idx + 1: process.is_alive() for idx, process in enumerate(self._workers)}
         reconciled = 0
@@ -410,6 +486,21 @@ class OrchestratorWorkersMixin:
                 finished_worker_id = self._worker_id_from_value(event.get("worker_id"))
                 finished_worker_pid = self._worker_pid_from_value(event.get("worker_pid"))
                 worker_will_exit = coerce_bool(event.get("worker_will_exit", False))
+                current_status = str(job_state.get("status", "")).strip().lower()
+                if current_status == "cancelled":
+                    LOGGER.info(
+                        "Ignoring finished event for cancelled job: id=%s worker=%s",
+                        job_id,
+                        event.get("worker_id"),
+                    )
+                    self._release_worker_slot_for_job(job_id=job_id, worker_id=finished_worker_id)
+                    if worker_will_exit and finished_worker_id is not None:
+                        await self._recycle_worker_slot(
+                            worker_id=finished_worker_id,
+                            expected_pid=finished_worker_pid,
+                        )
+                    await self._try_dispatch_jobs()
+                    continue
                 job_state["status"] = event.get("status", "error")
                 job_state["finished_at"] = event.get("timestamp")
                 if finished_worker_id is not None:

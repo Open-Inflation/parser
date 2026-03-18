@@ -63,6 +63,12 @@ def test_parse_request_stream_job_log_model() -> None:
     assert request.tail_lines == 150
 
 
+def test_parse_request_cancel_job_model() -> None:
+    request = parse_request({"action": "cancel_job", "job_id": "job-123"})
+    assert request.action == "cancel_job"
+    assert request.job_id == "job-123"
+
+
 def test_parse_request_accepts_password() -> None:
     request = parse_request({"action": "ping", "password": "secret"})
     assert request.password == "secret"
@@ -486,6 +492,7 @@ def test_help_reports_auth_required_flag() -> None:
     assert response["ok"] is True
     assert response["auth_required"] is True
     assert "stream_job_log" in response["actions"]
+    assert "cancel_job" in response["actions"]
 
 
 def test_stream_job_log_returns_tail_and_end(tmp_path: Path) -> None:
@@ -834,6 +841,47 @@ def test_dispatch_rules_allow_same_proxy_for_different_parsers() -> None:
     payload_2 = queue_2.get_nowait()
     parsers = {str(payload_1["parser_name"]), str(payload_2["parser_name"])}
     assert parsers == {"fixprice", "chizhik"}
+
+
+def test_cancel_job_marks_queued_job_cancelled() -> None:
+    defaults = _job_defaults()
+    server = OrchestratorServer(
+        host="127.0.0.1",
+        port=8765,
+        worker_count=1,
+        proxies=[],
+        defaults=defaults,
+        jobs_db_path=None,
+    )
+
+    queued_job = WorkerJob(
+        job_id="job-cancel-1",
+        parser_name="fixprice",
+        store_code="C001",
+        output_dir="./output",
+    )
+    server._pending_jobs = [queued_job]
+    server._job_store.upsert(
+        {
+            "job_id": queued_job.job_id,
+            "status": "queued",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "store_code": queued_job.store_code,
+            "parser": queued_job.parser_name,
+        }
+    )
+
+    response = asyncio.run(
+        server._dispatch(parse_request({"action": "cancel_job", "job_id": queued_job.job_id}))
+    )
+    assert response["ok"] is True
+    assert response["status"] == "cancelled"
+
+    state = server._job_store.get(queued_job.job_id)
+    assert state is not None
+    assert state["status"] == "cancelled"
+    assert state.get("finished_at") is not None
+    assert server._pending_jobs == []
 
 
 def test_try_dispatch_restarts_dead_idle_worker(monkeypatch: pytest.MonkeyPatch) -> None:

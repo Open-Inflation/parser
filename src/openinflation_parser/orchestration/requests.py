@@ -53,6 +53,11 @@ class StreamJobLogRequest(RequestModel):
     tail_lines: int | None = Field(default=None, ge=0, le=5000)
 
 
+class CancelJobRequest(RequestModel):
+    action: Literal["cancel_job"]
+    job_id: str = Field(min_length=1)
+
+
 class ShutdownRequest(RequestModel):
     action: Literal["shutdown"]
 
@@ -72,6 +77,7 @@ ParsedRequest: TypeAlias = (
     | JobsRequest
     | WorkersRequest
     | StreamJobLogRequest
+    | CancelJobRequest
     | ShutdownRequest
     | HelpRequest
     | UnknownRequest
@@ -85,6 +91,7 @@ ACTION_TO_MODEL: dict[str, type[RequestModel]] = {
     "jobs": JobsRequest,
     "workers": WorkersRequest,
     "stream_job_log": StreamJobLogRequest,
+    "cancel_job": CancelJobRequest,
     "shutdown": ShutdownRequest,
     "help": HelpRequest,
 }
