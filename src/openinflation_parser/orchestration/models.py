@@ -55,6 +55,7 @@ class WorkerJob:
     products_per_page: int = 24
     full_catalog: bool = False
     include_images: bool = False
+    use_product_info: bool = True
     strict_validation: bool = False
 
     @classmethod
@@ -74,6 +75,7 @@ class WorkerJob:
             products_per_page=int(payload.get("products_per_page", 24)),
             full_catalog=coerce_bool(payload.get("full_catalog", False)),
             include_images=coerce_bool(payload.get("include_images", False)),
+            use_product_info=coerce_bool(payload.get("use_product_info", True)),
             strict_validation=coerce_bool(payload.get("strict_validation", False)),
         )
 
@@ -94,4 +96,5 @@ class JobDefaults:
     products_per_page: int
     full_catalog: bool
     include_images: bool
+    use_product_info: bool
     strict_validation: bool

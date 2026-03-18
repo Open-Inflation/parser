@@ -173,6 +173,9 @@ class OrchestratorServer(
             include_images=coerce_bool(
                 request.get("include_images", self.defaults.include_images)
             ),
+            use_product_info=coerce_bool(
+                request.get("use_product_info", self.defaults.use_product_info)
+            ),
             strict_validation=coerce_bool(
                 request.get("strict_validation", self.defaults.strict_validation)
             ),
@@ -193,6 +196,7 @@ class OrchestratorServer(
             "products_per_page": job.products_per_page,
             "full_catalog": job.full_catalog,
             "include_images": job.include_images,
+            "use_product_info": job.use_product_info,
             "strict_validation": job.strict_validation,
             "output_dir": job.output_dir,
         }
@@ -201,7 +205,7 @@ class OrchestratorServer(
         self._pending_jobs.append(job)
         dispatched = await self._try_dispatch_jobs()
         LOGGER.info(
-            "Job enqueued: id=%s store=%s parser=%s city_id=%s full_catalog=%s timeout_ms=%s category_limit=%s pages=%s max_pages=%s per_page=%s include_images=%s strict_validation=%s pending=%s dispatched_now=%s",
+            "Job enqueued: id=%s store=%s parser=%s city_id=%s full_catalog=%s timeout_ms=%s category_limit=%s pages=%s max_pages=%s per_page=%s include_images=%s use_product_info=%s strict_validation=%s pending=%s dispatched_now=%s",
             job.job_id,
             job.store_code,
             job.parser_name,
@@ -213,6 +217,7 @@ class OrchestratorServer(
             job.max_pages_per_category,
             job.products_per_page,
             job.include_images,
+            job.use_product_info,
             job.strict_validation,
             len(self._pending_jobs),
             dispatched,

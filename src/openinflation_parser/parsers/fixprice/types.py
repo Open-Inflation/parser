@@ -17,6 +17,7 @@ class FixPriceParserConfig:
     headless: bool = True
     timeout_ms: float = 90000.0
     include_images: bool = False
+    use_product_info: bool = True
     image_limit_per_product: int = 1
     strict_validation: bool = False
     image_cache_dir: str | None = None

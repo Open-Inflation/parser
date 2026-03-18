@@ -84,7 +84,7 @@ async def execute_store_job(
     image_cache_dir.mkdir(parents=True, exist_ok=True)
 
     LOGGER.info(
-        "Worker %s started job %s for store=%s parser=%s city_id=%s full_catalog=%s include_images=%s timeout_ms=%s strict_validation=%s",
+        "Worker %s started job %s for store=%s parser=%s city_id=%s full_catalog=%s include_images=%s use_product_info=%s timeout_ms=%s strict_validation=%s",
         worker_id,
         job.job_id,
         job.store_code,
@@ -92,6 +92,7 @@ async def execute_store_job(
         job.city_id,
         job.full_catalog,
         job.include_images,
+        job.use_product_info,
         job.api_timeout_ms,
         job.strict_validation,
     )
@@ -103,6 +104,7 @@ async def execute_store_job(
             city_id=job.city_id,
             timeout_ms=job.api_timeout_ms,
             include_images=job.include_images,
+            use_product_info=job.use_product_info,
             strict_validation=job.strict_validation,
             image_cache_dir=str(image_cache_dir),
         ),

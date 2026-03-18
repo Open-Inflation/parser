@@ -102,6 +102,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--include-images", action="store_true", help="Download product images")
     parser.add_argument(
+        "--use-product-info",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable enrichment via Catalog.Product.info for fixprice/chizhik parsers.",
+    )
+    parser.add_argument(
         "--strict-validation",
         action="store_true",
         help="Enable strict pydantic validation for mapped models (can fail on missing fields).",
@@ -232,6 +238,7 @@ async def run_orchestrator(args: argparse.Namespace) -> None:
         products_per_page=max(1, min(27, args.products_per_page)),
         full_catalog=args.full_catalog,
         include_images=args.include_images,
+        use_product_info=bool(args.use_product_info),
         strict_validation=args.strict_validation,
     )
 
@@ -262,6 +269,7 @@ async def run_orchestrator(args: argparse.Namespace) -> None:
                 "full_catalog": args.full_catalog,
                 "max_pages_per_category": max(1, args.max_pages_per_category),
                 "api_timeout_ms": max(1000.0, args.api_timeout_ms),
+                "use_product_info": bool(args.use_product_info),
                 "strict_validation": args.strict_validation,
                 "jobs_max_history": max(1, args.jobs_max_history),
                 "jobs_retention_sec": max(60, args.jobs_retention_sec),

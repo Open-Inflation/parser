@@ -34,6 +34,18 @@ def test_parse_request_submit_store_model() -> None:
     assert request.city_id == 3
 
 
+def test_parse_request_submit_store_supports_use_product_info() -> None:
+    request = parse_request(
+        {
+            "action": "submit_store",
+            "store_code": "C001",
+            "use_product_info": False,
+        }
+    )
+    assert isinstance(request, SubmitStoreRequest)
+    assert request.use_product_info is False
+
+
 def test_parse_request_requires_action() -> None:
     with pytest.raises(ValueError):
         parse_request({"store_code": "C001"})
@@ -128,6 +140,7 @@ def _job_defaults() -> JobDefaults:
         products_per_page=24,
         full_catalog=False,
         include_images=False,
+        use_product_info=True,
         strict_validation=False,
     )
 

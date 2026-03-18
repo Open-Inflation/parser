@@ -459,3 +459,66 @@ def test_collect_products_page_uses_product_info_with_cache(
     assert first_cards[0].reviews_count == info_payload["reviews_count"]
     assert first_cards[0].producer_name == _expected_from_product_payload(info_payload)["producer_name"]
     assert calls["info"] == 1
+
+
+def test_collect_products_page_skips_product_info_when_disabled() -> None:
+    parser = ChizhikParser()
+    parser.config.use_product_info = False
+    products_payload = {"total_pages": 2}
+
+    class _Response:
+        def __init__(self, payload: Any):
+            self._payload = payload
+
+        def json(self) -> Any:
+            return self._payload
+
+    calls: dict[str, int] = {"info": 0}
+    list_item = {
+        "id": 12345,
+        "plu": "PLU-12345",
+        "slug": "demo-product--12345",
+        "title": "Demo product",
+        "price": 111.0,
+        "meta_data": [],
+    }
+
+    class _ProductService:
+        async def info(self, product_id: int, city_id: str | None = None) -> _Response:
+            del product_id
+            del city_id
+            calls["info"] += 1
+            return _Response({})
+
+    class _Catalog:
+        Product = _ProductService()
+
+        async def products_list(
+            self,
+            page: int = 1,
+            category_id: int | None = None,
+            city_id: str | None = None,
+            search: str | None = None,
+        ) -> _Response:
+            del category_id
+            del city_id
+            del search
+            total_pages = products_payload.get("total_pages") if isinstance(products_payload, dict) else 2
+            if not isinstance(total_pages, int):
+                total_pages = 2
+            assert page == 1
+            return _Response({"total_pages": total_pages, "items": [dict(list_item)]})
+
+    class _Api:
+        Catalog = _Catalog()
+
+    parser._api = _Api()  # type: ignore[assignment]
+
+    query = CatalogProductsQuery(category_id=88, category_uid="88", category_slug="demo")
+    cards, total_pages = asyncio.run(parser._collect_products_page(query=query, page=1))
+
+    assert total_pages is not None
+    assert len(cards) == 1
+    assert cards[0].plu == "PLU-12345"
+    assert cards[0].reviews_count is None
+    assert calls["info"] == 0

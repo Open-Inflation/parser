@@ -30,6 +30,7 @@ class SubmitStoreRequest(RequestModel):
     products_per_page: int | None = None
     full_catalog: bool | None = None
     include_images: bool | None = None
+    use_product_info: bool | None = None
     strict_validation: bool | None = None
 
 

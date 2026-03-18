@@ -15,6 +15,7 @@ class ParserRunSettings:
     city_id: int | str | None
     timeout_ms: float
     include_images: bool
+    use_product_info: bool
     strict_validation: bool
     image_cache_dir: str | None = None
 
@@ -58,6 +59,7 @@ class FixPriceAdapter:
             proxy=proxy,
             timeout_ms=settings.timeout_ms,
             include_images=settings.include_images,
+            use_product_info=settings.use_product_info,
             strict_validation=settings.strict_validation,
             image_cache_dir=settings.image_cache_dir,
         )
@@ -83,6 +85,7 @@ class ChizhikAdapter:
             proxy=proxy,
             timeout_ms=settings.timeout_ms,
             include_images=settings.include_images,
+            use_product_info=settings.use_product_info,
             strict_validation=settings.strict_validation,
             image_cache_dir=settings.image_cache_dir,
         )

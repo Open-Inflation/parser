@@ -29,9 +29,10 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
         from chizhik_api import ChizhikAPI
 
         LOGGER.info(
-            "Initializing Chizhik API client: city_id=%s include_images=%s timeout_ms=%s",
+            "Initializing Chizhik API client: city_id=%s include_images=%s use_product_info=%s timeout_ms=%s",
             self._effective_city_id,
             self.config.include_images,
+            self.config.use_product_info,
             self.config.timeout_ms,
         )
         self._api = ChizhikAPI(
@@ -219,7 +220,7 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
                 continue
             mapped_payload = item
             product_id = self._product_id_from_raw(item.get("id"))
-            if product_id is not None:
+            if self.config.use_product_info and product_id is not None:
                 try:
                     product_info = await self._collect_product_info(product_id=product_id)
                     if product_info is not None:

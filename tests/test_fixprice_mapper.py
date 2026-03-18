@@ -528,3 +528,92 @@ def test_collect_products_uses_product_info_with_cache(
     assert first_cards[0].price_unit == "RUB"
     assert calls["info"] == 1
     assert calls["countries"] == 1
+
+
+def test_collect_products_skips_product_info_when_disabled() -> None:
+    parser = FixPriceParser()
+    parser.config.use_product_info = False
+    product_row = {
+        "sku": "SKU-1",
+        "url": "https://fix-price.local/product-1",
+        "title": "Demo product",
+        "price": 99,
+        "inStock": 7,
+        "category": {"id": 101},
+    }
+    expected_category_alias = "demo-category"
+    expected_sub_alias: str | None = None
+
+    class _Response:
+        def __init__(self, payload: Any):
+            self._payload = payload
+
+        def json(self) -> Any:
+            return self._payload
+
+    calls: dict[str, int] = {"info": 0}
+    class _ProductService:
+        async def info(
+            self,
+            *,
+            url: str | None = None,
+            category: str | None = None,
+            product_id: int | None = None,
+            slug: str | None = None,
+        ) -> _Response:
+            del url
+            del category
+            del product_id
+            del slug
+            calls["info"] += 1
+            return _Response({})
+
+    class _Catalog:
+        Product = _ProductService()
+
+        async def products_list(
+            self,
+            category_alias: str,
+            subcategory_alias: str | None = None,
+            page: int = 1,
+            limit: int = 24,
+            sort: str = "popularity",
+        ) -> _Response:
+            del sort
+            assert category_alias == expected_category_alias
+            assert subcategory_alias == expected_sub_alias
+            assert page == 1
+            assert limit == 24
+            return _Response([dict(product_row)])
+
+    class _Geolocation:
+        async def countries_list(self, alias: str | None = None) -> _Response:
+            del alias
+            return _Response(
+                [
+                    {
+                        "id": 2,
+                        "alias": "RU",
+                        "currency": {"title": "Рубль", "symbol": "₽", "symbolFirst": False},
+                    }
+                ]
+            )
+
+    class _Api:
+        Catalog = _Catalog()
+        Geolocation = _Geolocation()
+
+    parser._api = _Api()  # type: ignore[assignment]
+    cards = asyncio.run(
+        parser.collect_products(
+            category_alias=expected_category_alias,
+            subcategory_alias=expected_sub_alias,
+            page=1,
+            limit=24,
+        )
+    )
+
+    assert len(cards) == 1
+    assert cards[0].description is None
+    assert cards[0].sku == "SKU-1"
+    assert calls["info"] == 0

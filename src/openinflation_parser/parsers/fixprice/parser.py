@@ -30,10 +30,11 @@ class FixPriceParser(ParserRuntimeMixin, StoreParser):
         self._product_info_cache.clear()
         self._currency_by_country_id.clear()
         LOGGER.info(
-            "Initializing FixPrice API client: country_id=%s city_id=%s include_images=%s timeout_ms=%s",
+            "Initializing FixPrice API client: country_id=%s city_id=%s include_images=%s use_product_info=%s timeout_ms=%s",
             self.config.country_id,
             self.config.city_id,
             self.config.include_images,
+            self.config.use_product_info,
             self.config.timeout_ms,
         )
         self._api = FixPriceAPI(
@@ -290,7 +291,7 @@ class FixPriceParser(ParserRuntimeMixin, StoreParser):
                 continue
             mapped_payload = raw_product
             product_url = self._safe_non_empty_str(raw_product.get("url"))
-            if product_url is not None:
+            if self.config.use_product_info and product_url is not None:
                 try:
                     product_info = await self._collect_product_info(product_url=product_url)
                     if product_info is not None:
