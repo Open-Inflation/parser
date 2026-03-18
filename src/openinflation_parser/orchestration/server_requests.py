@@ -8,8 +8,11 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from ..parsers import ParserRunSettings, get_parser, get_parser_adapter
+from .models import coerce_bool
 from .requests import (
     CancelJobRequest,
+    CollectStoresRequest,
     HelpRequest,
     JobsRequest,
     ParsedRequest,
@@ -83,6 +86,107 @@ class OrchestratorRequestsMixin:
             return False
         return secrets.compare_digest(request_password, self._auth_password)
 
+    @staticmethod
+    def _safe_non_empty_str(value: Any) -> str | None:
+        if value is None:
+            return None
+        token = str(value).strip()
+        return token or None
+
+    def _store_payload_from_model(self, store: Any) -> dict[str, Any] | None:
+        if store is None:
+            return None
+        if hasattr(store, "model_dump"):
+            payload = store.model_dump(mode="json")  # type: ignore[call-arg]
+        elif isinstance(store, dict):
+            payload = dict(store)
+        else:
+            return None
+
+        if not isinstance(payload, dict):
+            return None
+        payload.pop("categories", None)
+        payload.pop("products", None)
+        return payload
+
+    def _is_partial_store_payload(self, payload: dict[str, Any]) -> bool:
+        address = self._safe_non_empty_str(payload.get("address"))
+        store_lat = payload.get("latitude")
+        store_lon = payload.get("longitude")
+        admin = payload.get("administrative_unit") if isinstance(payload.get("administrative_unit"), dict) else {}
+        admin_lat = admin.get("latitude")
+        admin_lon = admin.get("longitude")
+        has_lat = store_lat is not None or admin_lat is not None
+        has_lon = store_lon is not None or admin_lon is not None
+        has_coords = has_lat and has_lon
+        return (not has_coords) or (address is None)
+
+    async def _collect_stores(self, request: CollectStoresRequest) -> dict[str, Any]:
+        parser_name = str(request.parser or self.defaults.parser_name).strip().lower()
+        get_parser(parser_name)
+        adapter = get_parser_adapter(parser_name)
+
+        country_id = int(request.country_id if request.country_id is not None else self.defaults.country_id)
+        city_id = request.city_id
+        timeout_ms = max(
+            1000.0,
+            float(request.api_timeout_ms if request.api_timeout_ms is not None else self.defaults.api_timeout_ms),
+        )
+        strict_validation = coerce_bool(
+            request.strict_validation
+            if request.strict_validation is not None
+            else self.defaults.strict_validation
+        )
+        settings = ParserRunSettings(
+            country_id=country_id,
+            city_id=city_id,
+            timeout_ms=timeout_ms,
+            include_images=False,
+            use_product_info=False,
+            strict_validation=strict_validation,
+            image_cache_dir=None,
+        )
+
+        warnings: list[str] = []
+        if parser_name == "chizhik":
+            warnings.append(
+                "Chizhik store directory is city-based and may contain partial virtual store data."
+            )
+
+        proxy = self._worker_proxy(0) if self.proxies else None
+        parser = adapter.create_parser(settings=settings, proxy=proxy)
+        stores_payload: list[dict[str, Any]] = []
+        partial_count = 0
+        async with parser:
+            stores = await parser.collect_store_info(
+                country_id=country_id,
+                city_id=city_id,
+                store_code=None,
+            )
+            for store in stores:
+                payload = self._store_payload_from_model(store)
+                if payload is None:
+                    continue
+                if self._is_partial_store_payload(payload):
+                    partial_count += 1
+                stores_payload.append(payload)
+
+        if not stores_payload:
+            warnings.append("Parser returned no stores.")
+        if partial_count > 0:
+            warnings.append(f"Collected partial store records: {partial_count}.")
+
+        return {
+            "parser": parser_name,
+            "country_id": country_id,
+            "city_id": city_id,
+            "stores_count": len(stores_payload),
+            "stores": stores_payload,
+            "partial_count": partial_count,
+            "warnings": warnings,
+            "collected_at": utc_now_iso(),
+        }
+
     async def _dispatch(self, request: ParsedRequest) -> dict[str, Any]:
         try:
             if not self._is_authenticated(request):
@@ -97,6 +201,10 @@ class OrchestratorRequestsMixin:
 
             if isinstance(request, SubmitStoreRequest):
                 payload = await self._enqueue_job(request.model_dump(exclude_none=True))
+                return {"ok": True, "action": request.action} | payload
+
+            if isinstance(request, CollectStoresRequest):
+                payload = await self._collect_stores(request)
                 return {"ok": True, "action": request.action} | payload
 
             if isinstance(request, StatusRequest):
@@ -151,6 +259,7 @@ class OrchestratorRequestsMixin:
                     "actions": [
                         "ping",
                         "submit_store",
+                        "collect_stores",
                         "status",
                         "jobs",
                         "workers",

@@ -542,10 +542,38 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
     ) -> list[RetailUnit]:
         del country_id
         del region_id
-        del city_id
 
         if store_code is None:
-            return []
+            city_filter = self._safe_non_empty_str(city_id)
+            normalized_city_filter = city_filter.lower() if city_filter is not None else None
+            stores: list[RetailUnit] = []
+            seen_codes: set[str] = set()
+            for city in await self.collect_cities():
+                code = self._safe_non_empty_str(city.alias) or self._safe_non_empty_str(city.name)
+                if code is None:
+                    continue
+                if normalized_city_filter is not None:
+                    alias_token = self._safe_non_empty_str(city.alias)
+                    name_token = self._safe_non_empty_str(city.name)
+                    candidates = [
+                        alias_token.lower() if alias_token is not None else None,
+                        name_token.lower() if name_token is not None else None,
+                    ]
+                    if normalized_city_filter not in candidates:
+                        continue
+                normalized_code = code.lower()
+                if normalized_code in seen_codes:
+                    continue
+                seen_codes.add(normalized_code)
+                stores.append(
+                    ChizhikMapper.map_virtual_store(
+                        store_code=code,
+                        administrative_unit=city,
+                        strict_validation=self.config.strict_validation,
+                    )
+                )
+            LOGGER.info("Collected city-based virtual stores: matched=%s", len(stores))
+            return stores
 
         administrative_unit = ChizhikMapper.fallback_administrative_unit(
             strict_validation=self.config.strict_validation

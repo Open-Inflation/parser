@@ -617,3 +617,79 @@ def test_collect_products_skips_product_info_when_disabled() -> None:
     assert cards[0].description is None
     assert cards[0].sku == "SKU-1"
     assert calls["info"] == 0
+
+
+def test_collect_store_info_without_store_code_returns_all_stores() -> None:
+    parser = FixPriceParser()
+
+    class _Response:
+        def __init__(self, payload: Any):
+            self._payload = payload
+
+        def json(self) -> Any:
+            return self._payload
+
+    calls: list[tuple[int, int | None, int | None]] = []
+
+    class _ShopService:
+        async def search(
+            self,
+            *,
+            country_id: int | None = None,
+            region_id: int | None = None,
+            city_id: int | None = None,
+        ) -> _Response:
+            calls.append((int(country_id or 0), region_id, city_id))
+            return _Response(
+                [
+                    {
+                        "pfm": "C001",
+                        "address": "Москва, Тестовая 1",
+                        "cityId": 3,
+                        "warehouse": False,
+                        "longitude": 37.62,
+                        "latitude": 55.75,
+                    },
+                    {
+                        "pfm": "C002",
+                        "address": "Москва, Тестовая 2",
+                        "cityId": 3,
+                        "warehouse": False,
+                        "longitude": 37.63,
+                        "latitude": 55.76,
+                    },
+                ]
+            )
+
+    class _Geolocation:
+        Shop = _ShopService()
+
+        async def cities_list(self, country_id: int | None = None) -> _Response:
+            assert country_id == 2
+            return _Response(
+                [
+                    {
+                        "id": 3,
+                        "title": "Москва",
+                        "alias": "moskva",
+                        "countryId": 2,
+                        "longitude": 37.62,
+                        "latitude": 55.75,
+                    }
+                ]
+            )
+
+    class _Api:
+        Geolocation = _Geolocation()
+
+    parser._api = _Api()  # type: ignore[assignment]
+    stores = asyncio.run(
+        parser.collect_store_info(
+            country_id=2,
+            store_code=None,
+        )
+    )
+
+    assert len(stores) == 2
+    assert {store.code for store in stores} == {"C001", "C002"}
+    assert calls == [(2, None, None)]

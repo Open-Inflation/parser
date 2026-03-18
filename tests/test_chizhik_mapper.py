@@ -5,7 +5,7 @@ from typing import Any, Iterator
 
 import pytest
 from chizhik_api import ChizhikAPI
-from openinflation_dataclass import Card
+from openinflation_dataclass import AdministrativeUnit, Card
 
 from openinflation_parser.parsers.chizhik import (
     CatalogProductsQuery,
@@ -395,6 +395,23 @@ def test_collect_store_info_live_request() -> None:
     stores = asyncio.run(_collect())
     assert len(stores) == 1
     assert stores[0].code == "moskva"
+
+
+def test_collect_store_info_without_store_code_returns_city_virtual_stores() -> None:
+    parser = ChizhikParser()
+
+    async def _fake_collect_cities(*, country_id: int | None = None) -> list[AdministrativeUnit]:
+        del country_id
+        return [
+            AdministrativeUnit.model_construct(alias="moskva", name="Москва", latitude=55.75, longitude=37.61),
+            AdministrativeUnit.model_construct(alias="spb", name="Санкт-Петербург", latitude=59.94, longitude=30.31),
+        ]
+
+    parser.collect_cities = _fake_collect_cities  # type: ignore[method-assign]
+    stores = asyncio.run(parser.collect_store_info(store_code=None))
+    assert len(stores) == 2
+    assert {store.code for store in stores} == {"moskva", "spb"}
+    assert stores[0].address is None
 
 
 def test_collect_products_page_uses_product_info_with_cache(

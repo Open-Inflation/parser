@@ -14,6 +14,7 @@ from openinflation_parser.orchestration.models import JobDefaults, WorkerJob
 from openinflation_parser.orchestration.server import OrchestratorServer
 from openinflation_parser.orchestration.job_store import JobStore
 from openinflation_parser.orchestration.requests import (
+    CollectStoresRequest,
     StreamJobLogRequest,
     SubmitStoreRequest,
     UnknownRequest,
@@ -44,6 +45,19 @@ def test_parse_request_submit_store_supports_use_product_info() -> None:
     )
     assert isinstance(request, SubmitStoreRequest)
     assert request.use_product_info is False
+
+
+def test_parse_request_collect_stores_model() -> None:
+    request = parse_request(
+        {
+            "action": "collect_stores",
+            "parser": "fixprice",
+            "city_id": "3",
+        }
+    )
+    assert isinstance(request, CollectStoresRequest)
+    assert request.parser == "fixprice"
+    assert request.city_id == 3
 
 
 def test_parse_request_requires_action() -> None:
@@ -491,8 +505,62 @@ def test_help_reports_auth_required_flag() -> None:
     )
     assert response["ok"] is True
     assert response["auth_required"] is True
+    assert "collect_stores" in response["actions"]
     assert "stream_job_log" in response["actions"]
     assert "cancel_job" in response["actions"]
+
+
+def test_collect_stores_dispatch_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    defaults = _job_defaults()
+    server = OrchestratorServer(
+        host="127.0.0.1",
+        port=8765,
+        worker_count=1,
+        proxies=[],
+        defaults=defaults,
+        jobs_db_path=None,
+    )
+
+    async def _collect_stores(_request: CollectStoresRequest) -> dict[str, object]:
+        return {
+            "parser": "fixprice",
+            "stores_count": 1,
+            "stores": [{"code": "C001"}],
+            "warnings": [],
+            "collected_at": "2026-01-01T00:00:00+00:00",
+        }
+
+    monkeypatch.setattr(server, "_collect_stores", _collect_stores)
+    request = parse_request({"action": "collect_stores", "parser": "fixprice"})
+    assert isinstance(request, CollectStoresRequest)
+    response = asyncio.run(server._dispatch(request))
+    assert response["ok"] is True
+    assert response["action"] == "collect_stores"
+    assert response["parser"] == "fixprice"
+    assert response["stores_count"] == 1
+
+
+def test_collect_stores_dispatch_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    defaults = _job_defaults()
+    server = OrchestratorServer(
+        host="127.0.0.1",
+        port=8765,
+        worker_count=1,
+        proxies=[],
+        defaults=defaults,
+        jobs_db_path=None,
+    )
+
+    async def _collect_stores(_request: CollectStoresRequest) -> dict[str, object]:
+        raise RuntimeError("collect stores boom")
+
+    monkeypatch.setattr(server, "_collect_stores", _collect_stores)
+    request = parse_request({"action": "collect_stores", "parser": "fixprice"})
+    assert isinstance(request, CollectStoresRequest)
+    response = asyncio.run(server._dispatch(request))
+    assert response["ok"] is False
+    assert response["action"] == "collect_stores"
+    assert "collect stores boom" in str(response["error"])
 
 
 def test_stream_job_log_returns_tail_and_end(tmp_path: Path) -> None:

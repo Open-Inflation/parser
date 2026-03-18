@@ -34,6 +34,15 @@ class SubmitStoreRequest(RequestModel):
     strict_validation: bool | None = None
 
 
+class CollectStoresRequest(RequestModel):
+    action: Literal["collect_stores"]
+    parser: str | None = None
+    country_id: int | None = None
+    city_id: int | str | None = None
+    api_timeout_ms: float | None = None
+    strict_validation: bool | None = None
+
+
 class StatusRequest(RequestModel):
     action: Literal["status"]
     job_id: str | None = None
@@ -73,6 +82,7 @@ class UnknownRequest(RequestModel):
 ParsedRequest: TypeAlias = (
     PingRequest
     | SubmitStoreRequest
+    | CollectStoresRequest
     | StatusRequest
     | JobsRequest
     | WorkersRequest
@@ -87,6 +97,7 @@ ParsedRequest: TypeAlias = (
 ACTION_TO_MODEL: dict[str, type[RequestModel]] = {
     "ping": PingRequest,
     "submit_store": SubmitStoreRequest,
+    "collect_stores": CollectStoresRequest,
     "status": StatusRequest,
     "jobs": JobsRequest,
     "workers": WorkersRequest,
@@ -113,6 +124,6 @@ def parse_request(payload: dict[str, Any]) -> ParsedRequest:
 
     normalized = dict(payload)
     normalized["action"] = action
-    if action == "submit_store":
+    if action in {"submit_store", "collect_stores"}:
         normalized["city_id"] = normalize_city_id(normalized.get("city_id"))
     return model_cls.model_validate(normalized)
