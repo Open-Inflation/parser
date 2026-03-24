@@ -285,7 +285,7 @@ class ChizhikMapper:
                 "uid": cls._id_to_str(node.get("id")),
                 "alias": cls._safe_text(node.get("slug"), cls._id_to_str(node.get("id"))),
                 "title": cls._safe_text(node.get("title"), node.get("name")),
-                "adult": cls._safe_bool(node.get("is_adults")),
+                "adult": cls._safe_bool(node.get("is_adults")) or False,
                 "children": children,
             },
             strict_validation=strict_validation,

@@ -100,37 +100,39 @@ class _FakeApi:
         self.Geolocation = _FakeGeolocation(shop_payload)
 
 
-def test_collect_store_info_resolves_delivery_store_id_from_shop_search() -> None:
-    parser = ChizhikParser(ChizhikParserConfig(store_code="moskva"))
+def test_collect_store_info_returns_real_store_by_sap_id() -> None:
+    parser = ChizhikParser(ChizhikParserConfig(store_code="HAOJ"))
     parser._api = _FakeApi(
         shop_payload=[
             {
                 "sap_id": "HAOJ",
+                "name": "Чижик, Москва, ул. Ленина, 1",
                 "slug": "moskva-800-letiia-11-34907",
                 "locality": "Москва",
             }
         ]
     )
+    parser._api.Geolocation.Shop.all_payload = parser._api.Geolocation.Shop.payload
 
-    stores = asyncio.run(parser.collect_store_info(store_code="moskva"))
+    stores = asyncio.run(parser.collect_store_info(store_code="HAOJ"))
 
     assert len(stores) == 1
-    assert stores[0].code == "moskva"
-    assert parser._effective_store_id == "HAOJ"
+    assert stores[0].code == "HAOJ"
+    assert stores[0].retail_type == "store"
 
 
-def test_collect_store_info_returns_empty_when_delivery_store_not_found() -> None:
+def test_collect_store_info_returns_empty_when_store_not_found_by_sap_id() -> None:
     parser = ChizhikParser(ChizhikParserConfig(store_code="unknown-store"))
     parser._api = _FakeApi(shop_payload=[])
+    parser._api.Geolocation.Shop.all_payload = []
 
     stores = asyncio.run(parser.collect_store_info(store_code="unknown-store"))
 
     assert stores == []
-    assert parser._effective_store_id is None
 
 
 def test_collect_categories_uses_delivery_tree_and_extended_endpoints() -> None:
-    parser = ChizhikParser(ChizhikParserConfig(store_code="moskva"))
+    parser = ChizhikParser(ChizhikParserConfig(store_code="HAOJ"))
     fake_api = _FakeApi(
         shop_payload=[
             {
@@ -150,7 +152,7 @@ def test_collect_categories_uses_delivery_tree_and_extended_endpoints() -> None:
     assert [child.uid for child in categories[0].children] == ["SUB-1", "SUB-2"]
     assert fake_api.Catalog.delivery_tree_calls == ["HAOJ"]
     assert fake_api.Catalog.delivery_tree_extended_calls == [("HAOJ", "CAT-1")]
-    assert fake_api.Geolocation.Shop.search_calls == ["moskva"]
+    assert fake_api.Geolocation.Shop.search_calls == []
 
 
 def test_collect_store_info_without_store_code_uses_real_shop_directory() -> None:

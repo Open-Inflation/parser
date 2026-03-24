@@ -11,6 +11,7 @@ from openinflation_parser.parsers.chizhik import (
     CatalogProductsQuery,
     ChizhikMapper,
     ChizhikParser,
+    ChizhikParserConfig,
 )
 
 
@@ -426,11 +427,11 @@ def test_collect_store_info_live_request() -> None:
     async def _collect() -> list[Any]:
         parser = ChizhikParser()
         async with parser:
-            return await parser.collect_store_info(store_code="moskva")
+            return await parser.collect_store_info(store_code="HAOJ")
 
     stores = asyncio.run(_collect())
     assert len(stores) == 1
-    assert stores[0].code == "moskva"
+    assert stores[0].code == "HAOJ"
 
 
 def test_collect_store_info_without_store_code_returns_real_stores_from_shop_directory() -> None:
@@ -474,21 +475,15 @@ def test_collect_store_info_without_store_code_returns_real_stores_from_shop_dir
     class _Geolocation:
         Shop = _ShopService()
 
+        async def cities_list(self, search_name: str, page: int = 1) -> _Response:
+            del search_name
+            del page
+            return _Response({"items": []})
+
     class _Api:
         Geolocation = _Geolocation()
 
-    async def _fake_city_for_store_code(store_code: str) -> AdministrativeUnit | None:
-        if store_code == "Санкт-Петербург":
-            return AdministrativeUnit.model_construct(
-                alias="spb",
-                name="Санкт-Петербург",
-                latitude=59.94,
-                longitude=30.31,
-            )
-        return None
-
     parser._api = _Api()
-    parser._city_for_store_code = _fake_city_for_store_code  # type: ignore[method-assign]
     stores = asyncio.run(parser.collect_store_info(store_code=None))
     assert len(stores) == 2
     assert {store.code for store in stores} == {"HAOJ", "SPB1"}
@@ -499,8 +494,7 @@ def test_collect_store_info_without_store_code_returns_real_stores_from_shop_dir
 def test_collect_products_page_uses_product_info_with_cache(
     chizhik_live_payloads: dict[str, Any],
 ) -> None:
-    parser = ChizhikParser()
-    parser._effective_store_id = chizhik_live_payloads["store_id"]
+    parser = ChizhikParser(ChizhikParserConfig(store_code=chizhik_live_payloads["store_id"]))
     products_payload = chizhik_live_payloads["products_payload"]
     info_payload = chizhik_live_payloads["product_info"]
 
@@ -556,9 +550,8 @@ def test_collect_products_page_uses_product_info_with_cache(
 
 
 def test_collect_products_page_skips_product_info_when_disabled() -> None:
-    parser = ChizhikParser()
+    parser = ChizhikParser(ChizhikParserConfig(store_code="HAOJ"))
     parser.config.use_product_info = False
-    parser._effective_store_id = "HAOJ"
 
     class _Response:
         def __init__(self, payload: Any):

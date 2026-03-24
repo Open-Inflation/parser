@@ -13,21 +13,15 @@
 
 Снаружи в `submit_store` и в worker всегда передается только `store_code`.
 
-## Внутренний runtime context
+## Идентификатор магазина
 
-Для delivery API Chizhik нужен внутренний `sap_id` / `store_id`.
+Для `ChizhikParser` внешний `store_code` теперь совпадает с `sap_id`.
 
 Правило:
 
-- этот id резолвится только внутри `ChizhikParser`
-- наружу он не торчит как основной идентификатор магазина
-- `RetailUnit.code` должен оставаться исходным внешним `store_code`
-
-Рабочий паттерн:
-
-- конфиг хранит внешний `store_code`
-- `collect_categories()` или `collect_products_for_queries()` при необходимости вызывают внутренний `_ensure_store_id()`
-- `_ensure_store_id()` резолвит `sap_id` и кэширует его
+- в orchestration, dashboard и worker для `chizhik` хранится именно `sap_id`
+- `delivery_*` эндпоинты получают тот же самый id без дополнительного резолва
+- `RetailUnit.code` возвращает этот же `sap_id`
 
 ## Этапы
 
@@ -44,7 +38,7 @@
 
 `collect_categories()`:
 
-1. лениво резолвит внутренний `store_id` по внешнему `store_code`
+1. берет `store_code` из runtime config как готовый `sap_id`
 2. вызывает `api.Catalog.delivery_tree(store_id=...)`
 3. берет верхние категории
 4. для каждой верхней категории добирает детей через `api.Catalog.delivery_tree_extended(...)`
@@ -74,7 +68,7 @@
 Сбор страницы каталога:
 
 - идет через `api.Catalog.delivery_products_list(...)`
-- использует уже резолвленный внутренний `store_id`
+- использует `store_code`, который уже является `sap_id`
 - опционально обогащает товар через `api.Catalog.Product.delivery_info(...)`
 - маппит payload в `Card`
 
@@ -83,14 +77,8 @@
 `collect_store_info(...)`:
 
 - вызывается после этапа каталога
-- ищет магазин по внешнему `store_code`
-- при необходимости использует fallback через город
+- ищет магазин по `sap_id` в `Shop.all()`
 - возвращает `RetailUnit`
-
-Важно:
-
-- внутренний `sap_id` можно сохранить в runtime cache
-- но наружу код магазина не должен подменяться `sap_id`
 
 ## Что считается ошибкой
 
@@ -98,4 +86,4 @@
 
 - `collect_categories()` не работает без предварительного `collect_store_info()`
 - worker перестраивается под `chizhik`-специфику вместо того, чтобы парсер адаптировался внутри себя
-- наружу вместо `store_code` начинает возвращаться внутренний `sap_id`
+- `chizhik` снова вводит отдельный промежуточный id поверх `sap_id`

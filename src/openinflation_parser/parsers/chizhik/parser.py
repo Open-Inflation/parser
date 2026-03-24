@@ -22,7 +22,6 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
     def __init__(self, config: ChizhikParserConfig | None = None):
         self.config = config or ChizhikParserConfig()
         self._api: Any = None
-        self._effective_store_id: str | None = None
         self._city_cache: dict[str, AdministrativeUnit] = {}
         self._product_info_cache: dict[int, dict[str, Any]] = {}
 
@@ -89,31 +88,20 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
             return None
 
     def _require_store_id(self) -> str:
-        store_id = self._safe_non_empty_str(self._effective_store_id)
+        store_id = self._safe_non_empty_str(self.config.store_code)
         if store_id is None:
             raise RuntimeError(
-                "ChizhikParser requires a resolved store_id before collecting categories or products."
+                "ChizhikParser requires store_code before collecting categories or products."
             )
         return store_id
 
     async def _ensure_store_id(self) -> str:
-        store_id = self._safe_non_empty_str(self._effective_store_id)
-        if store_id is not None:
-            return store_id
-
-        store_code = self._safe_non_empty_str(self.config.store_code)
-        if store_code is None:
+        store_id = self._safe_non_empty_str(self.config.store_code)
+        if store_id is None:
             raise RuntimeError(
                 "ChizhikParser requires store_code in config before collecting categories or products."
             )
-        matched_shop = await self._resolve_store(store_code)
-        if matched_shop is None:
-            raise ValueError(f"Store code {store_code!r} not found.")
-        resolved_store_id = self._safe_non_empty_str(matched_shop.get("sap_id"))
-        if resolved_store_id is None:
-            raise ValueError(f"Store code {store_code!r} did not resolve to sap_id.")
-        self._effective_store_id = resolved_store_id
-        return resolved_store_id
+        return store_id
 
     async def _collect_product_info(self, *, product_id: int) -> dict[str, Any] | None:
         cached = self._product_info_cache.get(product_id)
@@ -629,45 +617,24 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
             LOGGER.info("Collected Chizhik stores from Shop.all: matched=%s", len(stores))
             return stores
 
-        administrative_unit = ChizhikMapper.fallback_administrative_unit(
-            strict_validation=self.config.strict_validation
-        )
-        try:
-            requested_store_code = self._safe_non_empty_str(store_code)
-            if requested_store_code is not None:
-                self.config.store_code = requested_store_code
-            matched_shop = await self._resolve_store(store_code)
-            if matched_shop is not None:
-                resolved_store_id = self._safe_non_empty_str(matched_shop.get("sap_id"))
-                if resolved_store_id is not None:
-                    self._effective_store_id = resolved_store_id
-                locality = matched_shop.get("locality")
-                if isinstance(locality, dict):
-                    administrative_unit = ChizhikMapper.map_city(
-                        locality,
-                        strict_validation=self.config.strict_validation,
-                    )
-                elif isinstance(locality, str):
-                    matched = await self._city_for_store_code(locality)
-                    if matched is not None:
-                        administrative_unit = matched
-                else:
-                    matched = await self._city_for_store_code(store_code)
-                    if matched is not None:
-                        administrative_unit = matched
-            else:
-                matched = await self._city_for_store_code(store_code)
-                if matched is not None:
-                    administrative_unit = matched
-        except Exception:
-            LOGGER.exception("Failed to resolve city by store code: %s", store_code)
-
-        if self._safe_non_empty_str(self._effective_store_id) is None:
+        requested_store_code = self._safe_non_empty_str(store_code)
+        if requested_store_code is None:
             return []
 
+        try:
+            self.config.store_code = requested_store_code
+            matched_shop = await self._resolve_store(requested_store_code)
+        except Exception:
+            LOGGER.exception("Failed to resolve Chizhik store by sap_id: %s", requested_store_code)
+            return []
+
+        if matched_shop is None:
+            return []
+
+        administrative_unit = await self._administrative_unit_from_shop(matched_shop)
         return [
-            ChizhikMapper.map_virtual_store(
-                store_code=store_code,
+            ChizhikMapper.map_store(
+                matched_shop,
                 administrative_unit=administrative_unit,
                 strict_validation=self.config.strict_validation,
             )
@@ -711,47 +678,9 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
                 return []
             return [item for item in payload if isinstance(item, dict)]
 
-        def _pick(items: list[dict[str, Any]]) -> dict[str, Any] | None:
-            exact_sap: dict[str, Any] | None = None
-            exact_slug: dict[str, Any] | None = None
-            locality_match: dict[str, Any] | None = None
-            for item in items:
-                sap_id = self._safe_non_empty_str(item.get("sap_id"))
-                slug = self._safe_non_empty_str(item.get("slug"))
-                locality = item.get("locality")
-                locality_slug = None
-                locality_name = None
-                if isinstance(locality, dict):
-                    locality_slug = self._safe_non_empty_str(locality.get("slug"))
-                    locality_name = self._safe_non_empty_str(locality.get("name"))
-                elif isinstance(locality, str):
-                    locality_name = self._safe_non_empty_str(locality)
-                if sap_id is not None and sap_id.lower() == normalized:
-                    exact_sap = item
-                    break
-                if slug is not None and slug.lower() == normalized:
-                    exact_slug = item
-                if slug is not None and slug.lower().startswith(f"{normalized}-"):
-                    exact_slug = item
-                if locality_slug is not None and locality_slug.lower() == normalized:
-                    locality_match = item
-                if locality_name is not None and locality_name.lower() == normalized:
-                    locality_match = item
-            return exact_sap or exact_slug or locality_match or next(iter(items), None)
-
-        payload = await _payload_items(lambda: api.Geolocation.Shop.search(query=store_code))
-        selected = _pick(payload)
-        if selected is not None:
-            return selected
-
-        if not payload:
-            city = await self._city_for_store_code(store_code)
-            city_name = self._safe_non_empty_str(city.name) if city is not None else None
-            if city_name is not None and city_name.lower() != normalized:
-                payload = await _payload_items(lambda: api.Geolocation.Shop.search(query=city_name))
-                selected = _pick(payload)
-                if selected is not None:
-                    return selected
-
         payload = await _payload_items(api.Geolocation.Shop.all)
-        return _pick(payload)
+        for item in payload:
+            sap_id = self._safe_non_empty_str(item.get("sap_id"))
+            if sap_id is not None and sap_id.lower() == normalized:
+                return item
+        return None
