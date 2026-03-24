@@ -148,7 +148,7 @@ def test_worker_job_parses_timeout_settings() -> None:
     assert job.api_timeout_ms == 120000.0
 
 
-def test_worker_job_accepts_string_city_id() -> None:
+def test_worker_job_ignores_removed_city_id_field() -> None:
     from openinflation_parser.orchestrator import WorkerJob
 
     job = WorkerJob.from_payload(
@@ -161,7 +161,7 @@ def test_worker_job_accepts_string_city_id() -> None:
         }
     )
 
-    assert job.city_id == "fdc6b0ad-4096-43e7-a2e9-16404d2e1f68"
+    assert not hasattr(job, "city_id")
 
 
 def test_parser_registry_includes_chizhik() -> None:

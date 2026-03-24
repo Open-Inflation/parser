@@ -86,12 +86,11 @@ async def execute_store_job(
     image_cache_dir.mkdir(parents=True, exist_ok=True)
 
     LOGGER.info(
-        "Worker %s started job %s for store=%s parser=%s city_id=%s full_catalog=%s include_images=%s use_product_info=%s timeout_ms=%s strict_validation=%s",
+        "Worker %s started job %s for store=%s parser=%s full_catalog=%s include_images=%s use_product_info=%s timeout_ms=%s strict_validation=%s",
         worker_id,
         job.job_id,
         job.store_code,
         job.parser_name,
-        job.city_id,
         job.full_catalog,
         job.include_images,
         job.use_product_info,
@@ -103,7 +102,7 @@ async def execute_store_job(
     parser = adapter.create_parser(
         settings=ParserRunSettings(
             country_id=job.country_id,
-            city_id=job.city_id,
+            store_code=job.store_code,
             timeout_ms=job.api_timeout_ms,
             include_images=job.include_images,
             use_product_info=job.use_product_info,
@@ -112,7 +111,6 @@ async def execute_store_job(
         ),
         proxy=proxy,
     )
-    store_city_id = adapter.city_id_for_store_info(job.city_id)
     try:
         async with parser:
             categories = await parser.collect_categories()
@@ -162,7 +160,6 @@ async def execute_store_job(
 
             stores = await parser.collect_store_info(
                 country_id=job.country_id,
-                city_id=store_city_id,
                 store_code=job.store_code,
             )
             LOGGER.info(
@@ -174,7 +171,7 @@ async def execute_store_job(
             if not stores:
                 raise ValueError(
                     f"Store code {job.store_code!r} not found. "
-                    "Use a valid store code and provide city_id when possible."
+                    "Use a valid store code."
                 )
 
             prepared_images_dir = image_cache_dir / "images"

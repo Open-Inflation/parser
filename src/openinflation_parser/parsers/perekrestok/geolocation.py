@@ -36,36 +36,6 @@ class PerekrestokGeolocationMixin:
                 return None
         return None
 
-    async def _set_city_context(self, *, city_id: int) -> None:
-        api = self._require_api()
-        response = await api.Geolocation.Shop.on_map(
-            city_id=city_id,
-            page=1,
-            limit=1,
-        )
-        payload = response.json()
-        if not isinstance(payload, dict):
-            return
-        content = payload.get("content")
-        if not isinstance(content, dict):
-            return
-        items = content.get("items")
-        if not isinstance(items, list) or not items:
-            return
-        first_item = items[0]
-        if not isinstance(first_item, dict):
-            return
-        shop_id = self._store_id_from_code(first_item.get("id"))
-        if shop_id is None:
-            return
-
-        await api.Geolocation.Selection.shop_point(shop_id=shop_id)
-        LOGGER.info(
-            "Selected session city context: city_id=%s shop_id=%s",
-            city_id,
-            shop_id,
-        )
-
     async def collect_cities(self, *, country_id: int | None = None) -> list[AdministrativeUnit]:
         if self._city_cache_by_id:
             return list(self._city_cache_by_id.values())
@@ -197,22 +167,12 @@ class PerekrestokGeolocationMixin:
         *,
         country_id: int | None = None,
         region_id: int | None = None,
-        city_id: int | str | None = None,
         store_code: str | None = None,
     ) -> list[RetailUnit]:
         del region_id
 
         target_country_id = country_id or self.config.country_id
-        target_city_id: int | None
-        if isinstance(city_id, int):
-            target_city_id = city_id
-        elif isinstance(city_id, str):
-            try:
-                target_city_id = int(city_id)
-            except ValueError:
-                target_city_id = None
-        else:
-            target_city_id = self.config.city_id
+        target_city_id: int | None = None
 
         LOGGER.info(
             "Collecting stores: country_id=%s city_id=%s store_code=%s",

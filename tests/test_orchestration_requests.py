@@ -28,11 +28,10 @@ def test_parse_request_submit_store_model() -> None:
             "action": "submit_store",
             "store_code": "C001",
             "parser": "fixprice",
-            "city_id": "3",
         }
     )
     assert isinstance(request, SubmitStoreRequest)
-    assert request.city_id == 3
+    assert request.store_code == "C001"
 
 
 def test_parse_request_submit_store_supports_use_product_info() -> None:
@@ -52,12 +51,10 @@ def test_parse_request_collect_stores_model() -> None:
         {
             "action": "collect_stores",
             "parser": "fixprice",
-            "city_id": "3",
         }
     )
     assert isinstance(request, CollectStoresRequest)
     assert request.parser == "fixprice"
-    assert request.city_id == 3
 
 
 def test_parse_request_requires_action() -> None:
@@ -152,7 +149,6 @@ def _job_defaults() -> JobDefaults:
         parser_name="fixprice",
         output_dir="./output",
         country_id=2,
-        city_id=3,
         api_timeout_ms=90000.0,
         category_limit=1,
         pages_per_category=1,

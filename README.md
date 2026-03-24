@@ -1,5 +1,7 @@
 # parser
 
+См. также контракт парсеров: [src/openinflation_parser/parsers/PARSER_PIPELINE.md](/home/admin1/Documents/GitHub/parser/src/openinflation_parser/parsers/PARSER_PIPELINE.md).
+
 Существует оркестрационный модуль и суб-модули парсеров.
 
 Структура парсеров:
@@ -129,7 +131,6 @@ openinflation-orchestrator \
   --host 127.0.0.1 \
   --port 8765 \
   --output-dir ./output \
-  --city-id 81 \
   --include-images \
   --max-pages-per-category 200 \
   --bootstrap-store-code 1 \
@@ -144,7 +145,6 @@ openinflation-orchestrator \
   --host 127.0.0.1 \
   --port 8765 \
   --output-dir ./output \
-  --city-id 3 \
   --include-images \
   --max-pages-per-category 200 \
   --bootstrap-store-code C001 \
@@ -162,10 +162,10 @@ openinflation-orchestrator \
 Пример: `include_images` в `submit_store` переопределяет `--include-images` для конкретной задачи.
 
 - `{"action":"ping","password":"<your-password>"}`
-- `{"action":"submit_store","store_code":"C001","city_id":3,"password":"<your-password>"}`
-- `{"action":"submit_store","store_code":"C001","city_id":3,"full_catalog":true,"max_pages_per_category":200,"products_per_page":27,"api_timeout_ms":120000,"password":"<your-password>"}`
+- `{"action":"submit_store","store_code":"C001","password":"<your-password>"}`
+- `{"action":"submit_store","store_code":"C001","full_catalog":true,"max_pages_per_category":200,"products_per_page":27,"api_timeout_ms":120000,"password":"<your-password>"}`
 - `{"action":"submit_store","parser":"chizhik","store_code":"moskva","full_catalog":true,"max_pages_per_category":200,"api_timeout_ms":120000,"password":"<your-password>"}`
-- `{"action":"submit_store","parser":"perekrestok","store_code":"1","city_id":81,"full_catalog":true,"max_pages_per_category":200,"api_timeout_ms":120000,"password":"<your-password>"}`
+- `{"action":"submit_store","parser":"perekrestok","store_code":"1","full_catalog":true,"max_pages_per_category":200,"api_timeout_ms":120000,"password":"<your-password>"}`
 - `{"action":"status","password":"<your-password>"}`
 - `{"action":"status","job_id":"<id>","password":"<your-password>"}`
 - `{"action":"jobs","password":"<your-password>"}`

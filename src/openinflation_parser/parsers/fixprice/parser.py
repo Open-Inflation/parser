@@ -31,9 +31,8 @@ class FixPriceParser(ParserRuntimeMixin, StoreParser):
         self._product_info_cache.clear()
         self._currency_by_country_id.clear()
         LOGGER.info(
-            "Initializing FixPrice API client: country_id=%s city_id=%s include_images=%s use_product_info=%s timeout_ms=%s",
+            "Initializing FixPrice API client: country_id=%s include_images=%s use_product_info=%s timeout_ms=%s",
             self.config.country_id,
-            self.config.city_id,
             self.config.include_images,
             self.config.use_product_info,
             self.config.timeout_ms,
@@ -44,9 +43,6 @@ class FixPriceParser(ParserRuntimeMixin, StoreParser):
             timeout_ms=self.config.timeout_ms,
         )
         await self._api.__aenter__()
-
-        if self.config.city_id is not None:
-            self._api.city_id = self.config.city_id
         LOGGER.info("FixPrice API session warmed up")
         return self
 
@@ -402,21 +398,11 @@ class FixPriceParser(ParserRuntimeMixin, StoreParser):
         *,
         country_id: int | None = None,
         region_id: int | None = None,
-        city_id: int | str | None = None,
         store_code: str | None = None,
     ) -> list[RetailUnit]:
         api = self._require_api()
         target_country_id = country_id or self.config.country_id
-        target_city_id: int | None
-        if isinstance(city_id, int):
-            target_city_id = city_id
-        elif isinstance(city_id, str):
-            try:
-                target_city_id = int(city_id)
-            except ValueError:
-                target_city_id = None
-        else:
-            target_city_id = None
+        target_city_id: int | None = None
 
         LOGGER.info(
             "Collecting stores: country_id=%s region_id=%s city_id=%s store_code=%s",
@@ -453,7 +439,6 @@ class FixPriceParser(ParserRuntimeMixin, StoreParser):
             if administrative_unit is None:
                 administrative_unit = FixPriceMapper.fallback_administrative_unit(
                     country_id=target_country_id,
-                    city_id=mapped_city_id,
                     strict_validation=self.config.strict_validation,
                 )
 

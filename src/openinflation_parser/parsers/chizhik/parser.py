@@ -22,7 +22,7 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
     def __init__(self, config: ChizhikParserConfig | None = None):
         self.config = config or ChizhikParserConfig()
         self._api: Any = None
-        self._effective_city_id: str | None = self.config.city_id
+        self._effective_store_id: str | None = None
         self._city_cache: dict[str, AdministrativeUnit] = {}
         self._product_info_cache: dict[int, dict[str, Any]] = {}
 
@@ -30,8 +30,7 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
         from chizhik_api import ChizhikAPI
 
         LOGGER.info(
-            "Initializing Chizhik API client: city_id=%s include_images=%s use_product_info=%s timeout_ms=%s",
-            self._effective_city_id,
+            "Initializing Chizhik API client: include_images=%s use_product_info=%s timeout_ms=%s",
             self.config.include_images,
             self.config.use_product_info,
             self.config.timeout_ms,
@@ -57,16 +56,10 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
         return self._api
 
     @classmethod
-    def _category_id_from_uid(cls, uid: Any) -> int | None:
+    def _category_id_from_uid(cls, uid: Any) -> str | None:
         if isinstance(uid, int) and not isinstance(uid, bool):
-            return uid
-        token = cls._safe_non_empty_str(uid)
-        if token is None:
-            return None
-        try:
-            return int(token)
-        except ValueError:
-            return None
+            return str(uid)
+        return cls._safe_non_empty_str(uid)
 
     @staticmethod
     def _iter_leaf_categories(category: Category) -> list[Category]:
@@ -95,15 +88,42 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
         except ValueError:
             return None
 
+    def _require_store_id(self) -> str:
+        store_id = self._safe_non_empty_str(self._effective_store_id)
+        if store_id is None:
+            raise RuntimeError(
+                "ChizhikParser requires a resolved store_id before collecting categories or products."
+            )
+        return store_id
+
+    async def _ensure_store_id(self) -> str:
+        store_id = self._safe_non_empty_str(self._effective_store_id)
+        if store_id is not None:
+            return store_id
+
+        store_code = self._safe_non_empty_str(self.config.store_code)
+        if store_code is None:
+            raise RuntimeError(
+                "ChizhikParser requires store_code in config before collecting categories or products."
+            )
+        matched_shop = await self._resolve_store(store_code)
+        if matched_shop is None:
+            raise ValueError(f"Store code {store_code!r} not found.")
+        resolved_store_id = self._safe_non_empty_str(matched_shop.get("sap_id"))
+        if resolved_store_id is None:
+            raise ValueError(f"Store code {store_code!r} did not resolve to sap_id.")
+        self._effective_store_id = resolved_store_id
+        return resolved_store_id
+
     async def _collect_product_info(self, *, product_id: int) -> dict[str, Any] | None:
         cached = self._product_info_cache.get(product_id)
         if cached is not None:
             return cached
 
         api = self._require_api()
-        response = await api.Catalog.Product.info(
+        response = await api.Catalog.Product.delivery_info(
+            store_id=await self._ensure_store_id(),
             product_id=product_id,
-            city_id=self._effective_city_id,
         )
         payload = response.json()
         if not isinstance(payload, dict):
@@ -157,7 +177,7 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
                 )
 
         deduplicated: list[CatalogProductsQuery] = []
-        seen: set[int] = set()
+        seen: set[str] = set()
         for query in queries:
             if query.category_id in seen:
                 continue
@@ -172,26 +192,29 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
         page: int,
     ) -> tuple[list[Card], int | None]:
         api = self._require_api()
+        store_id = await self._ensure_store_id()
         LOGGER.info(
-            "Collecting products: category_id=%s slug=%s page=%s",
+            "Collecting delivery products: store_id=%s category_id=%s slug=%s page=%s",
+            store_id,
             query.category_id,
             query.category_slug,
             page,
         )
-        response = await api.Catalog.products_list(
-            page=page,
-            category_id=query.category_id,
-            city_id=self._effective_city_id,
+        limit = 499
+        response = await api.Catalog.delivery_products_list(
+            store_id=store_id,
+            category_alias=query.category_id,
+            offset=max(0, page - 1) * limit,
+            limit=limit,
         )
         payload = response.json()
         if not isinstance(payload, dict):
             return [], None
 
-        total_pages_raw = payload.get("total_pages")
-        total_pages = total_pages_raw if isinstance(total_pages_raw, int) else None
-        items = payload.get("items")
+        items = payload.get("products")
         if not isinstance(items, list):
-            return [], total_pages
+            return [], None
+        total_pages = page + 1 if len(items) >= limit else page
 
         total_items = len(items)
         cards: list[Card] = []
@@ -220,7 +243,7 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
                     )
                 continue
             mapped_payload = item
-            product_id = self._product_id_from_raw(item.get("id"))
+            product_id = self._product_id_from_raw(item.get("plu") or item.get("id"))
             if self.config.use_product_info and product_id is not None:
                 try:
                     product_info = await self._collect_product_info(product_id=product_id)
@@ -236,11 +259,7 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
                         exc,
                     )
 
-            image_urls = self._extract_image_urls(
-                product=mapped_payload,
-                images_field="images",
-                image_url_field="image",
-            )
+            image_urls = self._image_urls_from_product(mapped_payload)
             if image_urls:
                 candidate_image_products += 1
                 candidate_image_urls += len(image_urls)
@@ -308,6 +327,27 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
             cards_with_downloaded_images,
         )
         return cards, total_pages
+
+    @classmethod
+    def _image_urls_from_product(cls, product: dict[str, Any]) -> list[str]:
+        image_links = product.get("image_links")
+        urls: list[str] = []
+        if isinstance(image_links, dict):
+            for key in ("normal", "small"):
+                raw_urls = image_links.get(key)
+                if not isinstance(raw_urls, list):
+                    continue
+                for value in raw_urls:
+                    token = cls._safe_non_empty_str(value)
+                    if token is not None and token not in urls:
+                        urls.append(token)
+        if urls:
+            return urls
+        return cls._extract_image_urls(
+            product=product,
+            images_field="images",
+            image_url_field="image",
+        )
 
     async def collect_products_for_queries(
         self,
@@ -382,52 +422,62 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
 
     async def collect_categories(self) -> list[Category]:
         api = self._require_api()
-        configured_city_id = self._effective_city_id
-        LOGGER.info("Collecting Chizhik category tree: city_id=%s", configured_city_id)
-        response = await api.Catalog.tree(city_id=configured_city_id)
+        store_id = await self._ensure_store_id()
+        LOGGER.info("Collecting Chizhik delivery category tree: store_id=%s", store_id)
+        response = await api.Catalog.delivery_tree(store_id=store_id)
         raw_tree = response.json()
-        fallback_used = False
-
-        if configured_city_id is not None and (not isinstance(raw_tree, list) or not raw_tree):
-            LOGGER.warning(
-                "Chizhik category tree is empty/invalid for city_id=%s (type=%s). "
-                "Retrying without city_id.",
-                configured_city_id,
-                type(raw_tree).__name__,
-            )
-            response = await api.Catalog.tree()
-            raw_tree = response.json()
-            if isinstance(raw_tree, list):
-                self._effective_city_id = None
-                fallback_used = True
-                LOGGER.info(
-                    "Chizhik category tree fallback succeeded without city_id: categories=%s",
-                    len(raw_tree),
-                )
 
         if not isinstance(raw_tree, list):
             LOGGER.warning(
-                "Chizhik category tree has invalid payload type: type=%s city_id=%s",
+                "Chizhik delivery category tree has invalid payload type: type=%s store_id=%s",
                 type(raw_tree).__name__,
-                self._effective_city_id,
+                store_id,
             )
             return []
 
+        tree_nodes = [node for node in raw_tree if isinstance(node, dict)]
+        if not tree_nodes:
+            return []
+        root = tree_nodes[0]
+        category_nodes = root.get("categories")
+        if not isinstance(category_nodes, list):
+            category_nodes = tree_nodes
+
         categories: list[Category] = []
-        for node in raw_tree:
-            if isinstance(node, dict):
-                categories.append(
-                    ChizhikMapper.map_category_node(
-                        node,
-                        strict_validation=self.config.strict_validation,
+        for node in category_nodes:
+            if not isinstance(node, dict):
+                continue
+            enriched_node = dict(node)
+            category_id = self._safe_non_empty_str(node.get("id"))
+            if category_id is not None:
+                try:
+                    extended_response = await api.Catalog.delivery_tree_extended(
+                        store_id=store_id,
+                        category_alias=category_id,
                     )
+                    extended_payload = extended_response.json()
+                    if isinstance(extended_payload, dict):
+                        children = extended_payload.get("categories_tags")
+                        if isinstance(children, list):
+                            enriched_node["children"] = children
+                except Exception as exc:
+                    LOGGER.warning(
+                        "Failed to collect category extension: store_id=%s category_id=%s error=%s",
+                        store_id,
+                        category_id,
+                        exc,
+                    )
+            categories.append(
+                ChizhikMapper.map_category_node(
+                    enriched_node,
+                    strict_validation=self.config.strict_validation,
                 )
+            )
 
         LOGGER.info(
-            "Collected categories: %s (effective_city_id=%s fallback=%s)",
+            "Collected delivery categories: %s (store_id=%s)",
             len(categories),
-            self._effective_city_id,
-            fallback_used,
+            store_id,
         )
         return categories
 
@@ -449,7 +499,7 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
         products, _ = await self._collect_products_page(
             query=CatalogProductsQuery(
                 category_id=category_id,
-                category_uid=str(category_id),
+                category_uid=category_id,
                 category_slug=None,
             ),
             page=max(1, page),
@@ -496,6 +546,15 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
 
     async def _city_for_store_code(self, store_code: str) -> AdministrativeUnit | None:
         api = self._require_api()
+        normalized = store_code.strip().lower()
+        for city in await self.collect_cities():
+            alias = self._safe_non_empty_str(city.alias)
+            name = self._safe_non_empty_str(city.name)
+            if alias is not None and alias.lower() == normalized:
+                return city
+            if name is not None and name.lower() == normalized:
+                return city
+
         response = await api.Geolocation.cities_list(search_name=store_code, page=1)
         payload = response.json()
         if not isinstance(payload, dict):
@@ -504,7 +563,6 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
         if not isinstance(items, list) or not items:
             return None
 
-        normalized = store_code.strip().lower()
         exact: dict[str, Any] | None = None
         with_shop: dict[str, Any] | None = None
         for item in items:
@@ -537,30 +595,18 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
         *,
         country_id: int | None = None,
         region_id: int | None = None,
-        city_id: int | str | None = None,
         store_code: str | None = None,
     ) -> list[RetailUnit]:
         del country_id
         del region_id
 
         if store_code is None:
-            city_filter = self._safe_non_empty_str(city_id)
-            normalized_city_filter = city_filter.lower() if city_filter is not None else None
             stores: list[RetailUnit] = []
             seen_codes: set[str] = set()
             for city in await self.collect_cities():
                 code = self._safe_non_empty_str(city.alias) or self._safe_non_empty_str(city.name)
                 if code is None:
                     continue
-                if normalized_city_filter is not None:
-                    alias_token = self._safe_non_empty_str(city.alias)
-                    name_token = self._safe_non_empty_str(city.name)
-                    candidates = [
-                        alias_token.lower() if alias_token is not None else None,
-                        name_token.lower() if name_token is not None else None,
-                    ]
-                    if normalized_city_filter not in candidates:
-                        continue
                 normalized_code = code.lower()
                 if normalized_code in seen_codes:
                     continue
@@ -579,11 +625,37 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
             strict_validation=self.config.strict_validation
         )
         try:
-            matched = await self._city_for_store_code(store_code)
-            if matched is not None:
-                administrative_unit = matched
+            requested_store_code = self._safe_non_empty_str(store_code)
+            if requested_store_code is not None:
+                self.config.store_code = requested_store_code
+            matched_shop = await self._resolve_store(store_code)
+            if matched_shop is not None:
+                resolved_store_id = self._safe_non_empty_str(matched_shop.get("sap_id"))
+                if resolved_store_id is not None:
+                    self._effective_store_id = resolved_store_id
+                locality = matched_shop.get("locality")
+                if isinstance(locality, dict):
+                    administrative_unit = ChizhikMapper.map_city(
+                        locality,
+                        strict_validation=self.config.strict_validation,
+                    )
+                elif isinstance(locality, str):
+                    matched = await self._city_for_store_code(locality)
+                    if matched is not None:
+                        administrative_unit = matched
+                else:
+                    matched = await self._city_for_store_code(store_code)
+                    if matched is not None:
+                        administrative_unit = matched
+            else:
+                matched = await self._city_for_store_code(store_code)
+                if matched is not None:
+                    administrative_unit = matched
         except Exception:
             LOGGER.exception("Failed to resolve city by store code: %s", store_code)
+
+        if self._safe_non_empty_str(self._effective_store_id) is None:
+            return []
 
         return [
             ChizhikMapper.map_virtual_store(
@@ -592,3 +664,59 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
                 strict_validation=self.config.strict_validation,
             )
         ]
+
+    async def _resolve_store(self, store_code: str) -> dict[str, Any] | None:
+        api = self._require_api()
+        normalized = store_code.strip().lower()
+
+        async def _payload_items(call: Any) -> list[dict[str, Any]]:
+            response = await call()
+            payload = response.json()
+            if not isinstance(payload, list):
+                return []
+            return [item for item in payload if isinstance(item, dict)]
+
+        def _pick(items: list[dict[str, Any]]) -> dict[str, Any] | None:
+            exact_sap: dict[str, Any] | None = None
+            exact_slug: dict[str, Any] | None = None
+            locality_match: dict[str, Any] | None = None
+            for item in items:
+                sap_id = self._safe_non_empty_str(item.get("sap_id"))
+                slug = self._safe_non_empty_str(item.get("slug"))
+                locality = item.get("locality")
+                locality_slug = None
+                locality_name = None
+                if isinstance(locality, dict):
+                    locality_slug = self._safe_non_empty_str(locality.get("slug"))
+                    locality_name = self._safe_non_empty_str(locality.get("name"))
+                elif isinstance(locality, str):
+                    locality_name = self._safe_non_empty_str(locality)
+                if sap_id is not None and sap_id.lower() == normalized:
+                    exact_sap = item
+                    break
+                if slug is not None and slug.lower() == normalized:
+                    exact_slug = item
+                if slug is not None and slug.lower().startswith(f"{normalized}-"):
+                    exact_slug = item
+                if locality_slug is not None and locality_slug.lower() == normalized:
+                    locality_match = item
+                if locality_name is not None and locality_name.lower() == normalized:
+                    locality_match = item
+            return exact_sap or exact_slug or locality_match or next(iter(items), None)
+
+        payload = await _payload_items(lambda: api.Geolocation.Shop.search(query=store_code))
+        selected = _pick(payload)
+        if selected is not None:
+            return selected
+
+        if not payload:
+            city = await self._city_for_store_code(store_code)
+            city_name = self._safe_non_empty_str(city.name) if city is not None else None
+            if city_name is not None and city_name.lower() != normalized:
+                payload = await _payload_items(lambda: api.Geolocation.Shop.search(query=city_name))
+                selected = _pick(payload)
+                if selected is not None:
+                    return selected
+
+        payload = await _payload_items(api.Geolocation.Shop.all)
+        return _pick(payload)

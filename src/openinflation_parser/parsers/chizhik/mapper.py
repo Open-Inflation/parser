@@ -43,6 +43,14 @@ class ChizhikMapper:
     def _safe_str(value: Any) -> str | None:
         return value if isinstance(value, str) else None
 
+    @classmethod
+    def _safe_text(cls, *values: Any) -> str | None:
+        for value in values:
+            token = cls._safe_str(value)
+            if token is not None:
+                return token
+        return None
+
     @staticmethod
     def _safe_bool(value: Any) -> bool | None:
         return value if isinstance(value, bool) else None
@@ -53,11 +61,25 @@ class ChizhikMapper:
             return None
         if isinstance(value, (int, float)):
             return float(value)
+        if isinstance(value, str):
+            token = value.strip().replace(",", ".")
+            if not token:
+                return None
+            try:
+                return float(token)
+            except ValueError:
+                return None
         return None
 
-    @staticmethod
-    def _safe_int(value: Any) -> int | None:
-        return value if isinstance(value, int) and not isinstance(value, bool) else None
+    @classmethod
+    def _safe_int(cls, value: Any) -> int | None:
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            parsed = cls._safe_float(value)
+            if parsed is not None and parsed.is_integer():
+                return int(parsed)
+        return None
 
     @staticmethod
     def _id_to_str(value: Any) -> str | None:
@@ -103,6 +125,14 @@ class ChizhikMapper:
             return "LTR"
         return None
 
+    @staticmethod
+    def _children_from_node(node: dict[str, Any]) -> list[Any] | None:
+        for key in ("children", "categories", "categories_tags"):
+            raw_children = node.get(key)
+            if isinstance(raw_children, list):
+                return raw_children
+        return None
+
     @classmethod
     def _flatten_category_uids(cls, nodes: Any) -> list[str] | None:
         if not isinstance(nodes, list):
@@ -117,7 +147,7 @@ class ChizhikMapper:
             if uid is not None and uid not in seen:
                 seen.add(uid)
                 prepared.append(uid)
-            raw_children = node.get("children")
+            raw_children = cls._children_from_node(node)
             if isinstance(raw_children, list):
                 for child in raw_children:
                     walk(child)
@@ -149,13 +179,97 @@ class ChizhikMapper:
         return f"{cls.PRODUCT_PAGE_BASE_URL}/{normalized}/"
 
     @classmethod
+    def _meta_from_attributes(
+        cls,
+        attributes: Any,
+        *,
+        strict_validation: bool,
+    ) -> tuple[list[MetaData] | None, dict[str, str]]:
+        if not isinstance(attributes, list):
+            return None, {}
+
+        prepared: list[MetaData] = []
+        named: dict[str, str] = {}
+        for item in attributes:
+            if not isinstance(item, dict):
+                continue
+            name = cls._safe_str(item.get("name"))
+            value = cls._safe_text(item.get("value"))
+            uom = cls._safe_str(item.get("uom"))
+            if name is None or value is None:
+                continue
+            alias = name.strip().lower()
+            named.setdefault(alias, value)
+            if uom:
+                rendered = f"{value} {uom}".strip()
+            else:
+                rendered = value
+            prepared.append(
+                cls._build(
+                    MetaData,
+                    {
+                        "name": name,
+                        "alias": alias,
+                        "value": rendered,
+                    },
+                    strict_validation=strict_validation,
+                )
+            )
+        return prepared or None, named
+
+    @classmethod
+    def _price_components(
+        cls,
+        product: dict[str, Any],
+    ) -> tuple[float | None, float | None]:
+        prices = product.get("prices")
+        regular: float | None = None
+        discount: float | None = None
+        if isinstance(prices, dict):
+            regular = cls._safe_float(prices.get("regular"))
+            discount = cls._safe_float(prices.get("discount"))
+            if discount is None:
+                discount = cls._safe_float(prices.get("cpd_promo_price"))
+        elif isinstance(prices, list):
+            for item in prices:
+                if not isinstance(item, dict):
+                    continue
+                placement_type = cls._safe_str(item.get("placement_type"))
+                value = cls._safe_float(item.get("value"))
+                if value is None:
+                    continue
+                if placement_type == "regular_secondary" and regular is None:
+                    regular = value
+                elif placement_type == "promotional_primary" and discount is None:
+                    discount = value
+            if discount is None and prices:
+                discount = cls._safe_float(prices[0].get("value")) if isinstance(prices[0], dict) else None
+        effective_price = discount if discount is not None else regular
+        discount_price = regular if discount is not None and regular != discount else None
+        return effective_price, discount_price
+
+    @classmethod
+    def _rating_value(cls, product: dict[str, Any]) -> float | None:
+        rating = product.get("rating")
+        if isinstance(rating, dict):
+            return cls._safe_float(rating.get("rating_average"))
+        return cls._safe_float(rating)
+
+    @classmethod
+    def _reviews_count(cls, product: dict[str, Any]) -> int | None:
+        rating = product.get("rating")
+        if isinstance(rating, dict):
+            return cls._safe_int(rating.get("reviews_count"))
+        return cls._safe_int(product.get("reviews_count"))
+
+    @classmethod
     def map_category_node(
         cls,
         node: dict[str, Any],
         *,
         strict_validation: bool = False,
     ) -> Category:
-        raw_children = node.get("children")
+        raw_children = cls._children_from_node(node)
         children: list[Category] = []
         if isinstance(raw_children, list):
             for child in raw_children:
@@ -171,8 +285,8 @@ class ChizhikMapper:
             Category,
             {
                 "uid": cls._id_to_str(node.get("id")),
-                "alias": cls._safe_str(node.get("slug")),
-                "title": cls._safe_str(node.get("name")),
+                "alias": cls._safe_text(node.get("slug"), cls._id_to_str(node.get("id"))),
+                "title": cls._safe_text(node.get("title"), node.get("name")),
                 "adult": cls._safe_bool(node.get("is_adults")),
                 "children": children,
             },
@@ -262,8 +376,11 @@ class ChizhikMapper:
         gallery_images: list[str] | None = None,
         strict_validation: bool = False,
     ) -> Card:
+        metadata, named_attributes = cls._meta_from_attributes(
+            product.get("attributes"),
+            strict_validation=strict_validation,
+        )
         raw_meta = product.get("meta_data")
-        metadata: list[MetaData] | None = None
         meta_by_code: dict[str, int | float | str] = {}
         if isinstance(raw_meta, list):
             prepared: list[MetaData] = []
@@ -291,34 +408,63 @@ class ChizhikMapper:
                         strict_validation=strict_validation,
                     )
                 )
-            metadata = prepared or None
+            if metadata is None:
+                metadata = prepared or None
+            else:
+                metadata = [*metadata, *prepared]
+
+        price, discount_price = cls._price_components(product)
+        composition = cls._safe_text(
+            meta_by_code.get("composition"),
+            product.get("ingredients"),
+            named_attributes.get("состав"),
+        )
+        producer_name = cls._safe_text(
+            meta_by_code.get("producer_name"),
+            named_attributes.get("производитель"),
+        )
+        producer_country = cls._producer_country_from_raw(
+            meta_by_code.get("country") or named_attributes.get("страна производства")
+        )
+        brand = cls._safe_text(
+            meta_by_code.get("brand_name"),
+            named_attributes.get("бренд"),
+        )
+        adult = cls._safe_bool(product.get("is_adults"))
+        if adult is None:
+            adult = cls._safe_bool(product.get("has_age_restriction"))
+        promo = cls._safe_bool(product.get("is_inout"))
+        if promo is None:
+            promo = discount_price is not None or product.get("promo") is not None
 
         payload: dict[str, Any] = {
             "sku": None,
-            "plu": cls._safe_str(product.get("plu")),
+            "plu": cls._id_to_str(product.get("plu")),
             "source_page_url": cls._source_page_url_from_product(product),
-            "title": cls._safe_str(product.get("title")),
+            "title": cls._safe_text(product.get("title"), product.get("name")),
             "description": cls._safe_str(product.get("description")),
-            "adult": cls._safe_bool(product.get("is_adults")),
+            "adult": adult,
             "new": None,
-            "promo": cls._safe_bool(product.get("is_inout")),
+            "promo": promo,
             "season": None,
             "hit": None,
             "data_matrix": None,
-            "brand": cls._safe_str(meta_by_code.get("brand_name")),
-            "producer_name": cls._safe_str(meta_by_code.get("producer_name")),
-            "producer_country": cls._producer_country_from_raw(meta_by_code.get("country")),
-            "composition": cls._safe_str(meta_by_code.get("composition")),
+            "brand": brand,
+            "producer_name": producer_name,
+            "producer_country": producer_country,
+            "composition": composition,
             "meta_data": metadata,
-            "expiration_date_in_days": cls._safe_int(meta_by_code.get("exp_date_days")),
-            "rating": cls._safe_float(product.get("rating")),
-            "reviews_count": cls._safe_int(product.get("reviews_count")),
-            "price": cls._safe_float(product.get("price")),
-            "discount_price": None,
+            "expiration_date_in_days": cls._safe_int(
+                meta_by_code.get("exp_date_days") or named_attributes.get("срок хранения")
+            ),
+            "rating": cls._rating_value(product),
+            "reviews_count": cls._reviews_count(product),
+            "price": price if price is not None else cls._safe_float(product.get("price")),
+            "discount_price": discount_price,
             "loyal_price": None,
             "wholesale_price": None,
             "price_unit": None,
-            "unit_net": cls._unit_from_raw(product.get("base_unit")),
+            "unit_net": cls._unit_from_raw(product.get("base_unit") or product.get("uom")),
             "available_count": None,
             "package_quantity_net": None,
             "package_weight_gross": None,

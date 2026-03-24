@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Iterator
+from typing import Any
 
 import pytest
 from chizhik_api import ChizhikAPI
@@ -14,51 +14,11 @@ from openinflation_parser.parsers.chizhik import (
 )
 
 
-def _iter_leaf_category_ids(nodes: list[dict[str, Any]]) -> Iterator[int]:
-    def walk(node: dict[str, Any]) -> Iterator[int]:
-        node_id = node.get("id")
-        raw_children = node.get("children")
-        children = [child for child in raw_children if isinstance(child, dict)] if isinstance(raw_children, list) else []
-        if isinstance(node_id, int) and not children:
-            yield node_id
-            return
-        for child in children:
-            yield from walk(child)
-
-    for node in nodes:
-        if isinstance(node, dict):
-            yield from walk(node)
-
-
-def _metadata_by_code(product: dict[str, Any]) -> dict[str, int | float | str]:
-    raw_meta = product.get("meta_data")
-    if not isinstance(raw_meta, list):
-        return {}
-    prepared: dict[str, int | float | str] = {}
-    for item in raw_meta:
-        if not isinstance(item, dict):
-            continue
-        code = item.get("code")
-        value = item.get("value")
-        if not isinstance(code, str):
-            continue
-        if isinstance(value, bool):
-            continue
-        if not isinstance(value, (int, float, str)):
-            continue
-        prepared.setdefault(code, value)
-    return prepared
-
-
-def _to_int(value: Any) -> int | None:
+def _to_str(value: Any) -> str | None:
+    if isinstance(value, str):
+        return value
     if isinstance(value, int) and not isinstance(value, bool):
-        return value
-    return None
-
-
-def _to_bool(value: Any) -> bool | None:
-    if isinstance(value, bool):
-        return value
+        return str(value)
     return None
 
 
@@ -67,16 +27,69 @@ def _to_float(value: Any) -> float | None:
         return None
     if isinstance(value, (int, float)):
         return float(value)
-    return None
-
-
-def _to_str(value: Any) -> str | None:
     if isinstance(value, str):
-        return value
+        try:
+            return float(value)
+        except ValueError:
+            return None
     return None
 
 
-def _producer_country_from_meta(value: Any) -> str | None:
+def _to_int(value: Any) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(float(value))
+        except ValueError:
+            return None
+    return None
+
+
+def _attribute_value(product: dict[str, Any], name: str) -> str | None:
+    attributes = product.get("attributes")
+    if not isinstance(attributes, list):
+        return None
+    normalized = name.strip().lower()
+    for item in attributes:
+        if not isinstance(item, dict):
+            continue
+        item_name = item.get("name")
+        item_value = item.get("value")
+        if not isinstance(item_name, str) or not isinstance(item_value, str):
+            continue
+        if item_name.strip().lower() == normalized:
+            return item_value
+    return None
+
+
+def _price_components(product: dict[str, Any]) -> tuple[float | None, float | None]:
+    prices = product.get("prices")
+    regular: float | None = None
+    discount: float | None = None
+    if isinstance(prices, dict):
+        regular = _to_float(prices.get("regular"))
+        discount = _to_float(prices.get("discount"))
+    elif isinstance(prices, list):
+        for item in prices:
+            if not isinstance(item, dict):
+                continue
+            placement_type = item.get("placement_type")
+            value = _to_float(item.get("value"))
+            if value is None:
+                continue
+            if placement_type == "regular_secondary" and regular is None:
+                regular = value
+            elif placement_type == "promotional_primary" and discount is None:
+                discount = value
+        if discount is None and prices and isinstance(prices[0], dict):
+            discount = _to_float(prices[0].get("value"))
+    effective_price = discount if discount is not None else regular
+    discount_price = regular if regular is not None and discount is not None and regular != discount else None
+    return effective_price, discount_price
+
+
+def _producer_country_from_attribute(value: Any) -> str | None:
     token = _to_str(value)
     if token is None:
         return None
@@ -86,47 +99,41 @@ def _producer_country_from_meta(value: Any) -> str | None:
     return None
 
 
-def _source_page_url_from_product(product: dict[str, Any]) -> str | None:
-    slug = _to_str(product.get("slug"))
-    if slug is None:
-        return None
-    normalized = slug.strip().strip("/")
-    if not normalized:
-        return None
-    plu = _to_str(product.get("plu"))
-    if plu is not None:
-        normalized_plu = plu.strip()
-        if normalized_plu:
-            if normalized.endswith(f"--{normalized_plu}"):
-                slug_with_plu = normalized
-            elif normalized.endswith(f"-{normalized_plu}"):
-                slug_with_plu = f"{normalized[: -len(normalized_plu) - 1]}--{normalized_plu}"
-            else:
-                slug_base = normalized.rstrip("-")
-                slug_with_plu = f"{slug_base}--{normalized_plu}"
-            return f"https://chizhik.club/product/{slug_with_plu}/"
-    return f"https://chizhik.club/product/{normalized}/"
-
-
 def _expected_from_product_payload(product: dict[str, Any]) -> dict[str, Any]:
-    meta = _metadata_by_code(product)
+    rating = product.get("rating")
+    rating_average = rating.get("rating_average") if isinstance(rating, dict) else rating
+    reviews_count = rating.get("reviews_count") if isinstance(rating, dict) else product.get("reviews_count")
+    price, discount_price = _price_components(product)
     return {
         "plu": _to_str(product.get("plu")),
-        "source_page_url": _source_page_url_from_product(product),
-        "title": _to_str(product.get("title")),
+        "source_page_url": None,
+        "title": _to_str(product.get("name") or product.get("title")),
         "description": _to_str(product.get("description")),
-        "adult": _to_bool(product.get("is_adults")),
-        "promo": _to_bool(product.get("is_inout")),
-        "rating": _to_float(product.get("rating")),
-        "reviews_count": _to_int(product.get("reviews_count")),
-        "price": _to_float(product.get("price")),
-        "unit_net": ChizhikMapper._unit_from_raw(product.get("base_unit")),
-        "brand": _to_str(meta.get("brand_name")),
-        "producer_name": _to_str(meta.get("producer_name")),
-        "producer_country": _producer_country_from_meta(meta.get("country")),
-        "composition": _to_str(meta.get("composition")),
-        "expiration_date_in_days": _to_int(meta.get("exp_date_days")),
+        "adult": product.get("has_age_restriction"),
+        "promo": discount_price is not None or product.get("promo") is not None,
+        "rating": _to_float(rating_average),
+        "reviews_count": _to_int(reviews_count),
+        "price": price,
+        "discount_price": discount_price,
+        "unit_net": ChizhikMapper._unit_from_raw(product.get("uom") or product.get("base_unit")),
+        "brand": _attribute_value(product, "Бренд"),
+        "producer_name": _attribute_value(product, "Производитель"),
+        "producer_country": _producer_country_from_attribute(
+            _attribute_value(product, "Страна производства")
+        ),
+        "composition": _to_str(product.get("ingredients")),
     }
+
+
+def _delivery_leaf_ids(categories: list[dict[str, Any]]) -> list[str]:
+    leaf_ids: list[str] = []
+    for category in categories:
+        if not isinstance(category, dict):
+            continue
+        category_id = _to_str(category.get("id"))
+        if category_id is not None:
+            leaf_ids.append(category_id)
+    return leaf_ids
 
 
 def _collect_chizhik_live_payloads() -> dict[str, Any]:
@@ -152,32 +159,66 @@ def _collect_chizhik_live_payloads() -> dict[str, Any]:
                     raise last_error
                 raise RuntimeError(f"Live request failed without error: {operation}")
 
-            tree = await _request_json(
-                operation="catalog.tree",
-                call=lambda: api.Catalog.tree(),
+            shops = await _request_json(
+                operation="geo.shop.search",
+                call=lambda: api.Geolocation.Shop.search(query="Москва"),
             )
-            if not isinstance(tree, list):
-                raise RuntimeError("Chizhik categories response is not a list.")
-            top_nodes = [node for node in tree if isinstance(node, dict)]
-            if not top_nodes:
-                raise RuntimeError("Chizhik category tree is empty.")
-            first_node = top_nodes[0]
+            if not isinstance(shops, list) or not shops:
+                raise RuntimeError("Chizhik Shop.search returned no stores.")
+            first_shop = next((shop for shop in shops if isinstance(shop, dict)), None)
+            if first_shop is None:
+                raise RuntimeError("Chizhik Shop.search returned invalid payload.")
+            store_id = _to_str(first_shop.get("sap_id"))
+            if store_id is None:
+                raise RuntimeError("Chizhik Shop.search did not return sap_id.")
+
+            tree = await _request_json(
+                operation=f"catalog.delivery_tree[{store_id}]",
+                call=lambda: api.Catalog.delivery_tree(store_id=store_id),
+            )
+            if not isinstance(tree, list) or not tree:
+                raise RuntimeError("Chizhik delivery_tree returned empty payload.")
+            root = next((node for node in tree if isinstance(node, dict)), None)
+            if root is None:
+                raise RuntimeError("Chizhik delivery_tree returned invalid payload.")
+            categories = root.get("categories")
+            if not isinstance(categories, list) or not categories:
+                raise RuntimeError("Chizhik delivery_tree returned empty categories.")
+            first_node = next((node for node in categories if isinstance(node, dict)), None)
+            if first_node is None:
+                raise RuntimeError("Chizhik delivery_tree returned invalid category node.")
+
+            extended = await _request_json(
+                operation=f"catalog.delivery_tree_extended[{store_id}:{first_node['id']}]",
+                call=lambda: api.Catalog.delivery_tree_extended(
+                    store_id=store_id,
+                    category_alias=str(first_node["id"]),
+                ),
+            )
+            if not isinstance(extended, dict):
+                raise RuntimeError("Chizhik delivery_tree_extended response is not an object.")
+            children = extended.get("categories_tags")
+            if not isinstance(children, list):
+                children = []
+            enriched_first_node = dict(first_node)
+            enriched_first_node["children"] = children
 
             products_payload: dict[str, Any] | None = None
             product_row: dict[str, Any] | None = None
-            used_category_id: int | None = None
-            for category_id in _iter_leaf_category_ids(top_nodes):
+            used_category_id: str | None = None
+            for category_id in _delivery_leaf_ids(children or categories):
                 payload = await _request_json(
-                    operation=f"catalog.products_list[{category_id}:1]",
-                    call=lambda: api.Catalog.products_list(
-                        page=1,
-                        category_id=category_id,
-                        city_id=None,
+                    operation=f"catalog.delivery_products_list[{store_id}:{category_id}]",
+                    call=lambda category_id=category_id: api.Catalog.delivery_products_list(
+                        store_id=store_id,
+                        category_alias=category_id,
+                        offset=0,
+                        limit=50,
                     ),
                 )
                 if not isinstance(payload, dict):
                     continue
-                items = payload.get("items")
+                items = payload.get("products")
                 if not isinstance(items, list) or not items:
                     continue
                 first = items[0]
@@ -187,25 +228,26 @@ def _collect_chizhik_live_payloads() -> dict[str, Any]:
                 product_row = first
                 used_category_id = category_id
                 break
-            if product_row is None or used_category_id is None:
-                raise RuntimeError("Unable to fetch live Chizhik product for tests.")
+            if product_row is None or used_category_id is None or products_payload is None:
+                raise RuntimeError("Unable to fetch live Chizhik delivery product for tests.")
 
-            product_id = product_row.get("id")
-            if not isinstance(product_id, int):
-                raise RuntimeError("Chizhik product id is missing.")
+            product_id = _to_int(product_row.get("plu"))
+            if product_id is None:
+                raise RuntimeError("Chizhik delivery product plu is missing.")
             product_info = await _request_json(
-                operation=f"catalog.product.info[{product_id}]",
-                call=lambda: api.Catalog.Product.info(
+                operation=f"catalog.product.delivery_info[{store_id}:{product_id}]",
+                call=lambda: api.Catalog.Product.delivery_info(
+                    store_id=store_id,
                     product_id=product_id,
-                    city_id=None,
                 ),
             )
             if not isinstance(product_info, dict):
-                raise RuntimeError("Chizhik Product.info response is not an object.")
+                raise RuntimeError("Chizhik Product.delivery_info response is not an object.")
 
             return {
-                "tree": top_nodes,
-                "first_node": first_node,
+                "store_id": store_id,
+                "tree": categories,
+                "first_node": enriched_first_node,
                 "products_payload": products_payload,
                 "product_row": product_row,
                 "product_info": product_info,
@@ -225,7 +267,7 @@ def test_map_category_node_from_live_response(chizhik_live_payloads: dict[str, A
     mapped = ChizhikMapper.map_category_node(node)
 
     assert mapped.uid == str(node["id"])
-    assert mapped.alias == node["slug"]
+    assert mapped.alias == str(node["id"])
     assert mapped.title == node["name"]
     assert isinstance(mapped.children, list)
 
@@ -250,14 +292,8 @@ def test_map_product_from_live_list_response(chizhik_live_payloads: dict[str, An
     assert mapped.rating == expected["rating"]
     assert mapped.reviews_count == expected["reviews_count"]
     assert mapped.price == expected["price"]
+    assert mapped.discount_price == expected["discount_price"]
     assert mapped.unit_net == expected["unit_net"]
-    assert mapped.brand == expected["brand"]
-    assert mapped.producer_name == expected["producer_name"]
-    assert mapped.producer_country == expected["producer_country"]
-    assert mapped.composition == expected["composition"]
-    assert mapped.expiration_date_in_days == expected["expiration_date_in_days"]
-    assert mapped.categories_uid is not None
-    assert str(product["categories_tree"][0]["id"]) in mapped.categories_uid
     assert mapped.main_image == "images/00001/main.bin"
     assert mapped.images is not None
     assert mapped.images[0] == "images/00001/gallery_001.bin"
@@ -278,12 +314,12 @@ def test_map_product_from_live_info_response(chizhik_live_payloads: dict[str, An
     assert mapped.rating == expected["rating"]
     assert mapped.reviews_count == expected["reviews_count"]
     assert mapped.price == expected["price"]
+    assert mapped.discount_price == expected["discount_price"]
     assert mapped.unit_net == expected["unit_net"]
     assert mapped.brand == expected["brand"]
     assert mapped.producer_name == expected["producer_name"]
     assert mapped.producer_country == expected["producer_country"]
     assert mapped.composition == expected["composition"]
-    assert mapped.expiration_date_in_days == expected["expiration_date_in_days"]
 
 
 def test_build_catalog_queries_full_mode_prefers_leaf_categories(
@@ -303,9 +339,9 @@ def test_build_catalog_queries_full_mode_prefers_leaf_categories(
     )
 
     roots_with_children = {
-        int(category.uid)
+        category.uid
         for category in categories
-        if category.uid is not None and category.uid.isdigit() and category.children
+        if category.uid is not None and category.children
     }
     query_ids = {query.category_id for query in queries}
 
@@ -369,8 +405,8 @@ def test_collect_products_for_queries_merges_categories_uid_for_duplicate_key() 
 
     parser._collect_products_page = _fake_collect_products_page  # type: ignore[method-assign]
     queries = [
-        CatalogProductsQuery(category_id=1, category_uid="1", category_slug="cat-1"),
-        CatalogProductsQuery(category_id=2, category_uid="2", category_slug="cat-2"),
+        CatalogProductsQuery(category_id="1", category_uid="1", category_slug="cat-1"),
+        CatalogProductsQuery(category_id="2", category_uid="2", category_slug="cat-2"),
     ]
 
     cards = asyncio.run(
@@ -418,6 +454,7 @@ def test_collect_products_page_uses_product_info_with_cache(
     chizhik_live_payloads: dict[str, Any],
 ) -> None:
     parser = ChizhikParser()
+    parser._effective_store_id = chizhik_live_payloads["store_id"]
     products_payload = chizhik_live_payloads["products_payload"]
     info_payload = chizhik_live_payloads["product_info"]
 
@@ -430,50 +467,44 @@ def test_collect_products_page_uses_product_info_with_cache(
 
     calls: dict[str, int] = {"info": 0}
     list_item = dict(chizhik_live_payloads["product_row"])
-    list_item.pop("reviews_count", None)
-    list_item.pop("is_adults", None)
-    list_item.pop("meta_data", None)
-    list_item.pop("base_unit", None)
 
     class _ProductService:
-        async def info(self, product_id: int, city_id: str | None = None) -> _Response:
-            assert product_id == info_payload["id"]
-            assert city_id is None
+        async def delivery_info(self, store_id: str, product_id: int) -> _Response:
+            assert store_id == chizhik_live_payloads["store_id"]
+            assert product_id == info_payload["plu"]
             calls["info"] += 1
             return _Response(info_payload)
 
     class _Catalog:
         Product = _ProductService()
 
-        async def products_list(
+        async def delivery_products_list(
             self,
-            page: int = 1,
-            category_id: int | None = None,
-            city_id: str | None = None,
-            search: str | None = None,
+            *,
+            store_id: str,
+            category_alias: str,
+            offset: int = 0,
+            limit: int = 499,
         ) -> _Response:
-            del category_id
-            del city_id
-            del search
-            total_pages = products_payload.get("total_pages") if isinstance(products_payload, dict) else 2
-            if not isinstance(total_pages, int):
-                total_pages = 2
-            assert page in {1, 2}
-            return _Response({"total_pages": total_pages, "items": [dict(list_item)]})
+            del category_alias
+            assert store_id == chizhik_live_payloads["store_id"]
+            assert limit == 499
+            assert offset in {0, 499}
+            return _Response({"products": [dict(list_item)] if offset in {0, 499} else []})
 
     class _Api:
         Catalog = _Catalog()
 
     parser._api = _Api()  # type: ignore[assignment]
 
-    query = CatalogProductsQuery(category_id=88, category_uid="88", category_slug="shokolad")
+    query = CatalogProductsQuery(category_id="88", category_uid="88", category_slug="shokolad")
     first_cards, total_pages = asyncio.run(parser._collect_products_page(query=query, page=1))
     second_cards, _ = asyncio.run(parser._collect_products_page(query=query, page=2))
 
     assert total_pages is not None
     assert len(first_cards) == 1
     assert len(second_cards) == 1
-    assert first_cards[0].reviews_count == info_payload["reviews_count"]
+    assert first_cards[0].reviews_count == info_payload["rating"]["reviews_count"]
     assert first_cards[0].producer_name == _expected_from_product_payload(info_payload)["producer_name"]
     assert calls["info"] == 1
 
@@ -481,7 +512,7 @@ def test_collect_products_page_uses_product_info_with_cache(
 def test_collect_products_page_skips_product_info_when_disabled() -> None:
     parser = ChizhikParser()
     parser.config.use_product_info = False
-    products_payload = {"total_pages": 2}
+    parser._effective_store_id = "HAOJ"
 
     class _Response:
         def __init__(self, payload: Any):
@@ -492,50 +523,47 @@ def test_collect_products_page_skips_product_info_when_disabled() -> None:
 
     calls: dict[str, int] = {"info": 0}
     list_item = {
-        "id": 12345,
-        "plu": "PLU-12345",
-        "slug": "demo-product--12345",
-        "title": "Demo product",
-        "price": 111.0,
-        "meta_data": [],
+        "plu": 12345,
+        "name": "Demo product",
+        "uom": "шт",
+        "prices": {"regular": "111.0", "discount": None},
+        "image_links": {"normal": ["https://example.test/image.jpeg"]},
     }
 
     class _ProductService:
-        async def info(self, product_id: int, city_id: str | None = None) -> _Response:
+        async def delivery_info(self, store_id: str, product_id: int) -> _Response:
+            del store_id
             del product_id
-            del city_id
             calls["info"] += 1
             return _Response({})
 
     class _Catalog:
         Product = _ProductService()
 
-        async def products_list(
+        async def delivery_products_list(
             self,
-            page: int = 1,
-            category_id: int | None = None,
-            city_id: str | None = None,
-            search: str | None = None,
+            *,
+            store_id: str,
+            category_alias: str,
+            offset: int = 0,
+            limit: int = 499,
         ) -> _Response:
-            del category_id
-            del city_id
-            del search
-            total_pages = products_payload.get("total_pages") if isinstance(products_payload, dict) else 2
-            if not isinstance(total_pages, int):
-                total_pages = 2
-            assert page == 1
-            return _Response({"total_pages": total_pages, "items": [dict(list_item)]})
+            del store_id
+            del category_alias
+            del limit
+            assert offset == 0
+            return _Response({"products": [dict(list_item)]})
 
     class _Api:
         Catalog = _Catalog()
 
     parser._api = _Api()  # type: ignore[assignment]
 
-    query = CatalogProductsQuery(category_id=88, category_uid="88", category_slug="demo")
+    query = CatalogProductsQuery(category_id="88", category_uid="88", category_slug="demo")
     cards, total_pages = asyncio.run(parser._collect_products_page(query=query, page=1))
 
     assert total_pages is not None
     assert len(cards) == 1
-    assert cards[0].plu == "PLU-12345"
+    assert cards[0].plu == "12345"
     assert cards[0].reviews_count is None
     assert calls["info"] == 0

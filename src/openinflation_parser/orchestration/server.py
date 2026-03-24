@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from ..parsers import get_parser, get_parser_adapter
 from .job_store import JobStore
-from .models import JobDefaults, WorkerJob, coerce_bool, normalize_city_id
+from .models import JobDefaults, WorkerJob, coerce_bool
 from .server_downloads import OrchestratorDownloadsMixin
 from .server_requests import OrchestratorRequestsMixin
 from .server_workers import OrchestratorWorkersMixin
@@ -143,15 +143,12 @@ class OrchestratorServer(
         get_parser(parser_name)
         get_parser_adapter(parser_name)
 
-        city_id = normalize_city_id(request.get("city_id", self.defaults.city_id))
-
         job = WorkerJob(
             job_id=uuid4().hex,
             parser_name=parser_name,
             store_code=store_code,
             output_dir=str(request.get("output_dir", self.defaults.output_dir)),
             country_id=int(request.get("country_id", self.defaults.country_id)),
-            city_id=city_id,
             api_timeout_ms=float(request.get("api_timeout_ms", self.defaults.api_timeout_ms)),
             category_limit=max(1, int(request.get("category_limit", self.defaults.category_limit))),
             pages_per_category=max(
@@ -188,7 +185,6 @@ class OrchestratorServer(
             "store_code": job.store_code,
             "parser": job.parser_name,
             "country_id": job.country_id,
-            "city_id": job.city_id,
             "api_timeout_ms": job.api_timeout_ms,
             "category_limit": job.category_limit,
             "pages_per_category": job.pages_per_category,
@@ -205,11 +201,10 @@ class OrchestratorServer(
         self._pending_jobs.append(job)
         dispatched = await self._try_dispatch_jobs()
         LOGGER.info(
-            "Job enqueued: id=%s store=%s parser=%s city_id=%s full_catalog=%s timeout_ms=%s category_limit=%s pages=%s max_pages=%s per_page=%s include_images=%s use_product_info=%s strict_validation=%s pending=%s dispatched_now=%s",
+            "Job enqueued: id=%s store=%s parser=%s full_catalog=%s timeout_ms=%s category_limit=%s pages=%s max_pages=%s per_page=%s include_images=%s use_product_info=%s strict_validation=%s pending=%s dispatched_now=%s",
             job.job_id,
             job.store_code,
             job.parser_name,
-            job.city_id,
             job.full_catalog,
             job.api_timeout_ms,
             job.category_limit,
@@ -254,7 +249,6 @@ class OrchestratorServer(
                 example_payload: dict[str, Any] = {
                     "action": "submit_store",
                     "store_code": "C001",
-                    "city_id": self.defaults.city_id,
                 }
                 if self._auth_password is not None:
                     example_payload["password"] = "<your-password>"

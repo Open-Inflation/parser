@@ -33,8 +33,7 @@ class PerekrestokParser(
         from perekrestok_api import PerekrestokAPI
 
         LOGGER.info(
-            "Initializing Perekrestok API client: city_id=%s include_images=%s timeout_ms=%s",
-            self.config.city_id,
+            "Initializing Perekrestok API client: include_images=%s timeout_ms=%s",
             self.config.include_images,
             self.config.timeout_ms,
         )
@@ -44,16 +43,6 @@ class PerekrestokParser(
             timeout_ms=self.config.timeout_ms,
         )
         await self._api.__aenter__()
-
-        if self.config.city_id is not None:
-            try:
-                await self._set_city_context(city_id=self.config.city_id)
-            except Exception as exc:
-                LOGGER.warning(
-                    "Failed to set city context: city_id=%s error=%s",
-                    self.config.city_id,
-                    exc,
-                )
 
         LOGGER.info("Perekrestok API session warmed up")
         return self

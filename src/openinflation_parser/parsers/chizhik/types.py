@@ -12,7 +12,7 @@ CurrencyCode = Literal["RUB"]
 @dataclass(slots=True)
 class ChizhikParserConfig:
     country_id: int = 2
-    city_id: str | None = None
+    store_code: str | None = None
     proxy: str | dict[str, Any] | None = None
     headless: bool = True
     timeout_ms: float = 90000.0
@@ -27,6 +27,6 @@ class ChizhikParserConfig:
 
 @dataclass(frozen=True, slots=True)
 class CatalogProductsQuery:
-    category_id: int
+    category_id: str
     category_uid: str | None = None
     category_slug: str | None = None

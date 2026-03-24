@@ -445,11 +445,9 @@ class FixPriceMapper:
         cls,
         *,
         country_id: int | None,
-        city_id: int | None,
         strict_validation: bool = False,
     ) -> AdministrativeUnit:
         del country_id
-        del city_id
         return cls._build(
             AdministrativeUnit,
             {
@@ -562,6 +560,13 @@ class FixPriceMapper:
             if package_weight_grams is not None
             else None
         )
+        unit_net = cls._unit_from_raw(product.get("unitType"))
+        if unit_net is None:
+            unit_net = cls._unit_from_raw(product.get("unit"))
+        if package_weight_gross is not None:
+            unit_net = "KGM"
+        elif unit_net is None:
+            unit_net = "KGM"
 
         effective_price_unit = cls._price_unit_from_raw(product.get("priceUnit"))
         if effective_price_unit is None:
@@ -602,7 +607,7 @@ class FixPriceMapper:
             "loyal_price": loyal_price,
             "wholesale_price": None,
             "price_unit": effective_price_unit,
-            "unit_net": None,
+            "unit_net": unit_net,
             "available_count": available_count,
             "package_quantity_net": None,
             "package_weight_gross": package_weight_gross,

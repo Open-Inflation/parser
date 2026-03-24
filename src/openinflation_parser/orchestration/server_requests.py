@@ -127,7 +127,6 @@ class OrchestratorRequestsMixin:
         adapter = get_parser_adapter(parser_name)
 
         country_id = int(request.country_id if request.country_id is not None else self.defaults.country_id)
-        city_id = request.city_id
         timeout_ms = max(
             1000.0,
             float(request.api_timeout_ms if request.api_timeout_ms is not None else self.defaults.api_timeout_ms),
@@ -139,7 +138,7 @@ class OrchestratorRequestsMixin:
         )
         settings = ParserRunSettings(
             country_id=country_id,
-            city_id=city_id,
+            store_code=None,
             timeout_ms=timeout_ms,
             include_images=False,
             use_product_info=False,
@@ -160,7 +159,6 @@ class OrchestratorRequestsMixin:
         async with parser:
             stores = await parser.collect_store_info(
                 country_id=country_id,
-                city_id=city_id,
                 store_code=None,
             )
             for store in stores:
@@ -179,7 +177,6 @@ class OrchestratorRequestsMixin:
         return {
             "parser": parser_name,
             "country_id": country_id,
-            "city_id": city_id,
             "stores_count": len(stores_payload),
             "stores": stores_payload,
             "partial_count": partial_count,

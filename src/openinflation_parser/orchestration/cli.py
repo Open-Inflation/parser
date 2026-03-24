@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 
 from ..parsers import PARSER_REGISTRY
-from .models import JobDefaults, normalize_city_id
+from .models import JobDefaults
 from .server import OrchestratorServer
 from .utils import (
     DEFAULT_ORCHESTRATOR_SERVICE_NAME,
@@ -63,12 +63,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--output-dir", default="./output", help="Output directory for payload files")
     parser.add_argument("--country-id", type=int, default=2, help="Default country id")
-    parser.add_argument(
-        "--city-id",
-        type=str,
-        default=None,
-        help="Default city id (int for fixprice/perekrestok, string/int for chizhik).",
-    )
     parser.add_argument(
         "--api-timeout-ms",
         type=float,
@@ -230,7 +224,6 @@ async def run_orchestrator(args: argparse.Namespace) -> None:
         parser_name=args.parser,
         output_dir=args.output_dir,
         country_id=args.country_id,
-        city_id=normalize_city_id(args.city_id),
         api_timeout_ms=max(1000.0, args.api_timeout_ms),
         category_limit=max(1, args.category_limit),
         pages_per_category=max(1, args.pages_per_category),

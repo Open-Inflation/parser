@@ -4,8 +4,6 @@ from typing import Any, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr
 
-from .models import normalize_city_id
-
 
 class RequestModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -22,7 +20,6 @@ class SubmitStoreRequest(RequestModel):
     parser: str | None = None
     output_dir: str | None = None
     country_id: int | None = None
-    city_id: int | str | None = None
     api_timeout_ms: float | None = None
     category_limit: int | None = None
     pages_per_category: int | None = None
@@ -38,7 +35,6 @@ class CollectStoresRequest(RequestModel):
     action: Literal["collect_stores"]
     parser: str | None = None
     country_id: int | None = None
-    city_id: int | str | None = None
     api_timeout_ms: float | None = None
     strict_validation: bool | None = None
 
@@ -124,6 +120,4 @@ def parse_request(payload: dict[str, Any]) -> ParsedRequest:
 
     normalized = dict(payload)
     normalized["action"] = action
-    if action in {"submit_store", "collect_stores"}:
-        normalized["city_id"] = normalize_city_id(normalized.get("city_id"))
     return model_cls.model_validate(normalized)

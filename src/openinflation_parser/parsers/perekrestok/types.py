@@ -12,7 +12,6 @@ CurrencyCode = Literal["RUB"]
 @dataclass(slots=True)
 class PerekrestokParserConfig:
     country_id: int = 2
-    city_id: int | None = None
     proxy: str | dict[str, Any] | None = None
     headless: bool = True
     timeout_ms: float = 90000.0

@@ -12,7 +12,7 @@ from .perekrestok import PerekrestokParser, PerekrestokParserConfig
 @dataclass(frozen=True, slots=True)
 class ParserRunSettings:
     country_id: int
-    city_id: int | str | None
+    store_code: str | None
     timeout_ms: float
     include_images: bool
     use_product_info: bool
@@ -30,22 +30,9 @@ class ParserAdapter(Protocol):
         proxy: str | None,
     ) -> StoreParser: ...
 
-    def city_id_for_store_info(self, city_id: int | str | None) -> int | str | None: ...
-
 
 class FixPriceAdapter:
     name = "fixprice"
-
-    @staticmethod
-    def _fixprice_city_id(city_id: int | str | None) -> int | None:
-        if isinstance(city_id, int):
-            return city_id
-        if isinstance(city_id, str):
-            try:
-                return int(city_id)
-            except ValueError:
-                return None
-        return None
 
     def create_parser(
         self,
@@ -55,7 +42,6 @@ class FixPriceAdapter:
     ) -> StoreParser:
         config = FixPriceParserConfig(
             country_id=settings.country_id,
-            city_id=self._fixprice_city_id(settings.city_id),
             proxy=proxy,
             timeout_ms=settings.timeout_ms,
             include_images=settings.include_images,
@@ -64,10 +50,6 @@ class FixPriceAdapter:
             image_cache_dir=settings.image_cache_dir,
         )
         return FixPriceParser(config)
-
-    def city_id_for_store_info(self, city_id: int | str | None) -> int | None:
-        return self._fixprice_city_id(city_id)
-
 
 class ChizhikAdapter:
     name = "chizhik"
@@ -78,10 +60,9 @@ class ChizhikAdapter:
         settings: ParserRunSettings,
         proxy: str | None,
     ) -> StoreParser:
-        chizhik_city_id = None if settings.city_id is None else str(settings.city_id)
         config = ChizhikParserConfig(
             country_id=settings.country_id,
-            city_id=chizhik_city_id,
+            store_code=settings.store_code,
             proxy=proxy,
             timeout_ms=settings.timeout_ms,
             include_images=settings.include_images,
@@ -91,26 +72,8 @@ class ChizhikAdapter:
         )
         return ChizhikParser(config)
 
-    def city_id_for_store_info(self, city_id: int | str | None) -> int | str | None:
-        return city_id
-
-
 class PerekrestokAdapter:
     name = "perekrestok"
-
-    @staticmethod
-    def _perekrestok_city_id(city_id: int | str | None) -> int | None:
-        if isinstance(city_id, int):
-            return city_id
-        if isinstance(city_id, str):
-            token = city_id.strip()
-            if not token:
-                return None
-            try:
-                return int(token)
-            except ValueError:
-                return None
-        return None
 
     def create_parser(
         self,
@@ -120,7 +83,6 @@ class PerekrestokAdapter:
     ) -> StoreParser:
         config = PerekrestokParserConfig(
             country_id=settings.country_id,
-            city_id=self._perekrestok_city_id(settings.city_id),
             proxy=proxy,
             timeout_ms=settings.timeout_ms,
             include_images=settings.include_images,
@@ -128,9 +90,6 @@ class PerekrestokAdapter:
             image_cache_dir=settings.image_cache_dir,
         )
         return PerekrestokParser(config)
-
-    def city_id_for_store_info(self, city_id: int | str | None) -> int | None:
-        return self._perekrestok_city_id(city_id)
 
 
 PARSER_ADAPTERS: dict[str, ParserAdapter] = {
