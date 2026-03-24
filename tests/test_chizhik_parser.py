@@ -84,10 +84,10 @@ class _FakeShopService:
 class _FakeGeolocation:
     def __init__(self, shop_payload: Any) -> None:
         self.Shop = _FakeShopService(shop_payload)
+        self.cities_list_calls: list[tuple[str, int]] = []
 
     async def cities_list(self, search_name: str, page: int = 1) -> _FakeResponse:
-        del search_name
-        del page
+        self.cities_list_calls.append((search_name, page))
         return _FakeResponse(
             {
                 "items": [
@@ -201,6 +201,7 @@ def test_collect_store_info_without_store_code_uses_real_shop_directory() -> Non
     assert stores[0].schedule_weekdays.open_from is None
     assert stores[0].administrative_unit.alias == "moskva"
     assert fake_api.Geolocation.Shop.all_calls == 1
+    assert fake_api.Geolocation.cities_list_calls == []
 
 
 def test_collect_store_info_without_store_code_reports_failing_endpoint() -> None:

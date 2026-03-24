@@ -697,9 +697,6 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
                 strict_validation=self.config.strict_validation,
             )
         if isinstance(locality, str):
-            matched = await self._city_for_store_code(locality)
-            if matched is not None:
-                return matched
             return ChizhikMapper.map_city(
                 {
                     "name": locality,
