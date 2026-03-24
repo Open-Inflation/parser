@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import json
 import logging
 from typing import Any
 
@@ -53,6 +54,30 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
         if self._api is None:
             raise RuntimeError("ChizhikParser must be used inside 'async with'.")
         return self._api
+
+    @staticmethod
+    def _response_preview(response: Any, *, limit: int = 240) -> str | None:
+        for attr in ("text", "body", "content"):
+            value = getattr(response, attr, None)
+            if isinstance(value, bytes):
+                text = value.decode("utf-8", errors="replace")
+                return text[:limit]
+            if isinstance(value, str):
+                return value[:limit]
+        return None
+
+    def _decode_response_json(self, response: Any, *, operation: str) -> Any:
+        try:
+            return response.json()
+        except (json.JSONDecodeError, ValueError) as exc:
+            preview = self._response_preview(response)
+            if preview:
+                raise RuntimeError(
+                    f"Failed to decode Chizhik response: {operation}: {exc}. body={preview!r}"
+                ) from exc
+            raise RuntimeError(
+                f"Failed to decode Chizhik response: {operation}: {exc}"
+            ) from exc
 
     @classmethod
     def _category_id_from_uid(cls, uid: Any) -> str | None:
@@ -113,7 +138,10 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
             store_id=await self._ensure_store_id(),
             product_id=product_id,
         )
-        payload = response.json()
+        payload = self._decode_response_json(
+            response,
+            operation=f"catalog.product.delivery_info[{await self._ensure_store_id()}:{product_id}]",
+        )
         if not isinstance(payload, dict):
             return None
 
@@ -195,7 +223,10 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
             offset=max(0, page - 1) * limit,
             limit=limit,
         )
-        payload = response.json()
+        payload = self._decode_response_json(
+            response,
+            operation=f"catalog.delivery_products_list[{store_id}:{query.category_id}:page={page}]",
+        )
         if not isinstance(payload, dict):
             return [], None
 
@@ -413,7 +444,10 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
         store_id = await self._ensure_store_id()
         LOGGER.info("Collecting Chizhik delivery category tree: store_id=%s", store_id)
         response = await api.Catalog.delivery_tree(store_id=store_id)
-        raw_tree = response.json()
+        raw_tree = self._decode_response_json(
+            response,
+            operation=f"catalog.delivery_tree[{store_id}]",
+        )
 
         if not isinstance(raw_tree, list):
             LOGGER.warning(
@@ -443,7 +477,10 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
                         store_id=store_id,
                         category_alias=category_id,
                     )
-                    extended_payload = extended_response.json()
+                    extended_payload = self._decode_response_json(
+                        extended_response,
+                        operation=f"catalog.delivery_tree_extended[{store_id}:{category_id}]",
+                    )
                     if isinstance(extended_payload, dict):
                         children = extended_payload.get("categories_tags")
                         if isinstance(children, list):
@@ -506,7 +543,10 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
         for page in range(1, max_pages + 1):
             LOGGER.info("Collecting cities: search=%s page=%s", search, page)
             response = await api.Geolocation.cities_list(search_name=search, page=page)
-            payload = response.json()
+            payload = self._decode_response_json(
+                response,
+                operation=f"geolocation.cities_list[{search}:page={page}]",
+            )
             if not isinstance(payload, dict):
                 break
             items = payload.get("items")
@@ -544,7 +584,10 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
                 return city
 
         response = await api.Geolocation.cities_list(search_name=store_code, page=1)
-        payload = response.json()
+        payload = self._decode_response_json(
+            response,
+            operation=f"geolocation.cities_list[{store_code}:page=1]",
+        )
         if not isinstance(payload, dict):
             return None
         items = payload.get("items")
@@ -591,7 +634,10 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
         if store_code is None:
             api = self._require_api()
             response = await api.Geolocation.Shop.all()
-            payload = response.json()
+            payload = self._decode_response_json(
+                response,
+                operation="geolocation.shop.all",
+            )
             if not isinstance(payload, list):
                 return []
             stores: list[RetailUnit] = []
@@ -673,7 +719,10 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
 
         async def _payload_items(call: Any) -> list[dict[str, Any]]:
             response = await call()
-            payload = response.json()
+            payload = self._decode_response_json(
+                response,
+                operation="geolocation.shop.all",
+            )
             if not isinstance(payload, list):
                 return []
             return [item for item in payload if isinstance(item, dict)]

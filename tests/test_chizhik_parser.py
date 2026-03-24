@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -14,6 +15,14 @@ class _FakeResponse:
 
     def json(self) -> Any:
         return self.payload
+
+
+@dataclass
+class _BrokenResponse:
+    text: str = ""
+
+    def json(self) -> Any:
+        raise json.JSONDecodeError("Expecting value", self.text, 0)
 
 
 class _FakeCatalog:
@@ -192,3 +201,22 @@ def test_collect_store_info_without_store_code_uses_real_shop_directory() -> Non
     assert stores[0].schedule_weekdays.open_from is None
     assert stores[0].administrative_unit.alias == "moskva"
     assert fake_api.Geolocation.Shop.all_calls == 1
+
+
+def test_collect_store_info_without_store_code_reports_failing_endpoint() -> None:
+    parser = ChizhikParser()
+    fake_api = _FakeApi(shop_payload=[])
+
+    async def _broken_all() -> _BrokenResponse:
+        return _BrokenResponse("")
+
+    fake_api.Geolocation.Shop.all = _broken_all  # type: ignore[method-assign]
+    parser._api = fake_api
+
+    try:
+        asyncio.run(parser.collect_store_info(store_code=None))
+    except RuntimeError as exc:
+        assert "geolocation.shop.all" in str(exc)
+        assert "Failed to decode Chizhik response" in str(exc)
+    else:
+        raise AssertionError("collect_store_info(store_code=None) should fail on invalid JSON response")
