@@ -433,21 +433,67 @@ def test_collect_store_info_live_request() -> None:
     assert stores[0].code == "moskva"
 
 
-def test_collect_store_info_without_store_code_returns_city_virtual_stores() -> None:
+def test_collect_store_info_without_store_code_returns_real_stores_from_shop_directory() -> None:
     parser = ChizhikParser()
 
-    async def _fake_collect_cities(*, country_id: int | None = None) -> list[AdministrativeUnit]:
-        del country_id
-        return [
-            AdministrativeUnit.model_construct(alias="moskva", name="Москва", latitude=55.75, longitude=37.61),
-            AdministrativeUnit.model_construct(alias="spb", name="Санкт-Петербург", latitude=59.94, longitude=30.31),
-        ]
+    class _Response:
+        def __init__(self, payload: Any):
+            self._payload = payload
 
-    parser.collect_cities = _fake_collect_cities  # type: ignore[method-assign]
+        def json(self) -> Any:
+            return self._payload
+
+    class _ShopService:
+        async def all(self) -> _Response:
+            return _Response(
+                [
+                    {
+                        "sap_id": "HAOJ",
+                        "name": "Чижик, Москва",
+                        "working_hours": "08:00 - 22:00",
+                        "lat": 55.75,
+                        "lon": 37.61,
+                        "locality": {
+                            "name": "Москва",
+                            "slug": "moskva",
+                            "lat": 55.75,
+                            "lon": 37.61,
+                        },
+                    },
+                    {
+                        "sap_id": "SPB1",
+                        "name": "Чижик, Санкт-Петербург",
+                        "working_hours": "09:00 - 21:00",
+                        "lat": 59.94,
+                        "lon": 30.31,
+                        "locality": "Санкт-Петербург",
+                    },
+                ]
+            )
+
+    class _Geolocation:
+        Shop = _ShopService()
+
+    class _Api:
+        Geolocation = _Geolocation()
+
+    async def _fake_city_for_store_code(store_code: str) -> AdministrativeUnit | None:
+        if store_code == "Санкт-Петербург":
+            return AdministrativeUnit.model_construct(
+                alias="spb",
+                name="Санкт-Петербург",
+                latitude=59.94,
+                longitude=30.31,
+            )
+        return None
+
+    parser._api = _Api()
+    parser._city_for_store_code = _fake_city_for_store_code  # type: ignore[method-assign]
     stores = asyncio.run(parser.collect_store_info(store_code=None))
     assert len(stores) == 2
-    assert {store.code for store in stores} == {"moskva", "spb"}
-    assert stores[0].address is None
+    assert {store.code for store in stores} == {"HAOJ", "SPB1"}
+    assert {store.retail_type for store in stores} == {"store"}
+    assert stores[0].address is not None
 
 
 def test_collect_products_page_uses_product_info_with_cache(

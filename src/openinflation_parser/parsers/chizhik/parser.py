@@ -601,24 +601,32 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
         del region_id
 
         if store_code is None:
+            api = self._require_api()
+            response = await api.Geolocation.Shop.all()
+            payload = response.json()
+            if not isinstance(payload, list):
+                return []
             stores: list[RetailUnit] = []
             seen_codes: set[str] = set()
-            for city in await self.collect_cities():
-                code = self._safe_non_empty_str(city.alias) or self._safe_non_empty_str(city.name)
+            for item in payload:
+                if not isinstance(item, dict):
+                    continue
+                code = self._safe_non_empty_str(item.get("sap_id"))
                 if code is None:
                     continue
                 normalized_code = code.lower()
                 if normalized_code in seen_codes:
                     continue
                 seen_codes.add(normalized_code)
+                administrative_unit = await self._administrative_unit_from_shop(item)
                 stores.append(
-                    ChizhikMapper.map_virtual_store(
-                        store_code=code,
-                        administrative_unit=city,
+                    ChizhikMapper.map_store(
+                        item,
+                        administrative_unit=administrative_unit,
                         strict_validation=self.config.strict_validation,
                     )
                 )
-            LOGGER.info("Collected city-based virtual stores: matched=%s", len(stores))
+            LOGGER.info("Collected Chizhik stores from Shop.all: matched=%s", len(stores))
             return stores
 
         administrative_unit = ChizhikMapper.fallback_administrative_unit(
@@ -664,6 +672,33 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
                 strict_validation=self.config.strict_validation,
             )
         ]
+
+    async def _administrative_unit_from_shop(
+        self,
+        shop: dict[str, Any],
+    ) -> AdministrativeUnit:
+        locality = shop.get("locality")
+        if isinstance(locality, dict):
+            return ChizhikMapper.map_city(
+                locality,
+                strict_validation=self.config.strict_validation,
+            )
+        if isinstance(locality, str):
+            matched = await self._city_for_store_code(locality)
+            if matched is not None:
+                return matched
+            return ChizhikMapper.map_city(
+                {
+                    "name": locality,
+                    "slug": None,
+                    "lat": shop.get("lat"),
+                    "lon": shop.get("lon"),
+                },
+                strict_validation=self.config.strict_validation,
+            )
+        return ChizhikMapper.fallback_administrative_unit(
+            strict_validation=self.config.strict_validation
+        )
 
     async def _resolve_store(self, store_code: str) -> dict[str, Any] | None:
         api = self._require_api()

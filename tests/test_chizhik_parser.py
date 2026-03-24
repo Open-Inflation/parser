@@ -59,11 +59,17 @@ class _FakeCatalog:
 class _FakeShopService:
     def __init__(self, payload: Any) -> None:
         self.payload = payload
+        self.all_payload: Any = []
         self.search_calls: list[str] = []
+        self.all_calls = 0
 
     async def search(self, query: str) -> _FakeResponse:
         self.search_calls.append(query)
         return _FakeResponse(self.payload)
+
+    async def all(self) -> _FakeResponse:
+        self.all_calls += 1
+        return _FakeResponse(self.all_payload)
 
 
 class _FakeGeolocation:
@@ -145,3 +151,42 @@ def test_collect_categories_uses_delivery_tree_and_extended_endpoints() -> None:
     assert fake_api.Catalog.delivery_tree_calls == ["HAOJ"]
     assert fake_api.Catalog.delivery_tree_extended_calls == [("HAOJ", "CAT-1")]
     assert fake_api.Geolocation.Shop.search_calls == ["moskva"]
+
+
+def test_collect_store_info_without_store_code_uses_real_shop_directory() -> None:
+    parser = ChizhikParser()
+    fake_api = _FakeApi(shop_payload=[])
+    fake_api.Geolocation.Shop.all_payload = [
+        {
+            "sap_id": "HAOJ",
+            "name": "Чижик, Москва, ул. Ленина, 1",
+            "working_hours": "09:00 - 21:00",
+            "lat": 55.75,
+            "lon": 37.61,
+            "locality": {
+                "name": "Москва",
+                "slug": "moskva",
+                "lat": 55.75,
+                "lon": 37.61,
+            },
+        },
+        {
+            "sap_id": "HAOJ",
+            "name": "Дубликат",
+            "working_hours": "10:00 - 22:00",
+            "lat": 55.76,
+            "lon": 37.62,
+            "locality": "Москва",
+        },
+    ]
+    parser._api = fake_api
+
+    stores = asyncio.run(parser.collect_store_info(store_code=None))
+
+    assert len(stores) == 1
+    assert stores[0].code == "HAOJ"
+    assert stores[0].retail_type == "store"
+    assert stores[0].address == "Чижик, Москва, ул. Ленина, 1"
+    assert stores[0].schedule_weekdays.open_from is None
+    assert stores[0].administrative_unit.alias == "moskva"
+    assert fake_api.Geolocation.Shop.all_calls == 1

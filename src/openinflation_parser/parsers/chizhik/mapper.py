@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 from typing import Any
 
 from openinflation_dataclass import (
@@ -18,7 +17,6 @@ class ChizhikMapper:
     """Mappers from Chizhik API contracts to openinflation dataclasses."""
 
     PRODUCT_PAGE_BASE_URL = "https://chizhik.club/product"
-
     COUNTRY_NAME_TO_CODE: dict[str, str] = {
         "россия": "RUS",
         "russia": "RUS",
@@ -360,6 +358,39 @@ class ChizhikMapper:
                 "temporarily_closed": None,
                 "longitude": administrative_unit.longitude,
                 "latitude": administrative_unit.latitude,
+                "administrative_unit": administrative_unit,
+                "categories": None,
+                "products": None,
+            },
+            strict_validation=strict_validation,
+        )
+
+    @classmethod
+    def map_store(
+        cls,
+        store: dict[str, Any],
+        *,
+        administrative_unit: AdministrativeUnit,
+        strict_validation: bool = False,
+    ) -> RetailUnit:
+        return cls._build(
+            RetailUnit,
+            {
+                "retail_type": "store",
+                "code": cls._safe_text(store.get("sap_id")),
+                "address": cls._safe_text(store.get("name")),
+                "schedule_weekdays": cls._empty_schedule(
+                    strict_validation=strict_validation
+                ),
+                "schedule_saturday": cls._empty_schedule(
+                    strict_validation=strict_validation
+                ),
+                "schedule_sunday": cls._empty_schedule(
+                    strict_validation=strict_validation
+                ),
+                "temporarily_closed": None,
+                "longitude": cls._safe_float(store.get("lon")),
+                "latitude": cls._safe_float(store.get("lat")),
                 "administrative_unit": administrative_unit,
                 "categories": None,
                 "products": None,
