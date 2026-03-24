@@ -23,7 +23,6 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
     def __init__(self, config: ChizhikParserConfig | None = None):
         self.config = config or ChizhikParserConfig()
         self._api: Any = None
-        self._city_cache: dict[str, AdministrativeUnit] = {}
         self._product_info_cache: dict[int, dict[str, Any]] = {}
 
     async def __aenter__(self) -> "ChizhikParser":
@@ -111,14 +110,6 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
             return int(token)
         except ValueError:
             return None
-
-    def _require_store_id(self) -> str:
-        store_id = self._safe_non_empty_str(self.config.store_code)
-        if store_id is None:
-            raise RuntimeError(
-                "ChizhikParser requires store_code before collecting categories or products."
-            )
-        return store_id
 
     async def _ensure_store_id(self) -> str:
         store_id = self._safe_non_empty_str(self.config.store_code)
@@ -533,93 +524,7 @@ class ChizhikParser(ParserRuntimeMixin, StoreParser):
 
     async def collect_cities(self, *, country_id: int | None = None) -> list[AdministrativeUnit]:
         del country_id
-        if self._city_cache:
-            return list(self._city_cache.values())
-
-        api = self._require_api()
-        search = self._safe_non_empty_str(self.config.city_search) or "а"
-        max_pages = max(1, self.config.max_city_pages)
-
-        for page in range(1, max_pages + 1):
-            LOGGER.info("Collecting cities: search=%s page=%s", search, page)
-            response = await api.Geolocation.cities_list(search_name=search, page=page)
-            payload = self._decode_response_json(
-                response,
-                operation=f"geolocation.cities_list[{search}:page={page}]",
-            )
-            if not isinstance(payload, dict):
-                break
-            items = payload.get("items")
-            if not isinstance(items, list) or not items:
-                break
-
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                city = ChizhikMapper.map_city(
-                    item,
-                    strict_validation=self.config.strict_validation,
-                )
-                key = city.alias or city.name
-                if key is None:
-                    continue
-                self._city_cache[key] = city
-
-            total_pages_raw = payload.get("total_pages")
-            total_pages = total_pages_raw if isinstance(total_pages_raw, int) else None
-            if total_pages is not None and page >= total_pages:
-                break
-
-        return list(self._city_cache.values())
-
-    async def _city_for_store_code(self, store_code: str) -> AdministrativeUnit | None:
-        api = self._require_api()
-        normalized = store_code.strip().lower()
-        for city in await self.collect_cities():
-            alias = self._safe_non_empty_str(city.alias)
-            name = self._safe_non_empty_str(city.name)
-            if alias is not None and alias.lower() == normalized:
-                return city
-            if name is not None and name.lower() == normalized:
-                return city
-
-        response = await api.Geolocation.cities_list(search_name=store_code, page=1)
-        payload = self._decode_response_json(
-            response,
-            operation=f"geolocation.cities_list[{store_code}:page=1]",
-        )
-        if not isinstance(payload, dict):
-            return None
-        items = payload.get("items")
-        if not isinstance(items, list) or not items:
-            return None
-
-        exact: dict[str, Any] | None = None
-        with_shop: dict[str, Any] | None = None
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            slug = self._safe_non_empty_str(item.get("slug"))
-            name = self._safe_non_empty_str(item.get("name"))
-            has_shop = item.get("has_shop") is True
-            if slug is not None and slug.lower() == normalized:
-                exact = item
-                break
-            if name is not None and name.lower() == normalized:
-                exact = item
-                break
-            if has_shop and with_shop is None:
-                with_shop = item
-
-        selected = exact or with_shop
-        if selected is None and isinstance(items[0], dict):
-            selected = items[0]
-        if selected is None:
-            return None
-        return ChizhikMapper.map_city(
-            selected,
-            strict_validation=self.config.strict_validation,
-        )
+        return []
 
     async def collect_store_info(
         self,

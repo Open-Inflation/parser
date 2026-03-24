@@ -333,39 +333,6 @@ class ChizhikMapper:
         )
 
     @classmethod
-    def map_virtual_store(
-        cls,
-        *,
-        store_code: str | None,
-        administrative_unit: AdministrativeUnit,
-        strict_validation: bool = False,
-    ) -> RetailUnit:
-        return cls._build(
-            RetailUnit,
-            {
-                "retail_type": None,
-                "code": cls._safe_str(store_code),
-                "address": None,
-                "schedule_weekdays": cls._empty_schedule(
-                    strict_validation=strict_validation
-                ),
-                "schedule_saturday": cls._empty_schedule(
-                    strict_validation=strict_validation
-                ),
-                "schedule_sunday": cls._empty_schedule(
-                    strict_validation=strict_validation
-                ),
-                "temporarily_closed": None,
-                "longitude": administrative_unit.longitude,
-                "latitude": administrative_unit.latitude,
-                "administrative_unit": administrative_unit,
-                "categories": None,
-                "products": None,
-            },
-            strict_validation=strict_validation,
-        )
-
-    @classmethod
     def map_store(
         cls,
         store: dict[str, Any],
