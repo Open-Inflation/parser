@@ -119,6 +119,7 @@
 - `../chizhik_api/tests/__snapshots__/ShopService.all.json`
   - top-level payload: `list`
   - parser использует `sap_id`, `name`, `locality`, `lat`, `lon`, `average_rating`, `open_date`
+  - `open_date` прокидывается только если это каноническая ISO-дата `YYYY-MM-DD`; статусные строки вроде `Скоро открытие!` parser не отправляет дальше
   - `locality` в используемом снапшоте приходит строкой, не объектом
   - `working_hours` в снапшоте есть, но текущий mapper не разворачивает его в `schedule_*`
 

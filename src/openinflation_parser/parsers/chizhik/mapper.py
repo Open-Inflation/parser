@@ -1,4 +1,5 @@
 from __future__ import annotations
+from datetime import date
 from typing import Any
 
 from openinflation_dataclass import (
@@ -48,6 +49,21 @@ class ChizhikMapper:
             if token is not None:
                 return token
         return None
+
+    @classmethod
+    def _safe_iso_date_str(cls, value: Any) -> str | None:
+        token = cls._safe_str(value)
+        if token is None:
+            return None
+        normalized = token.strip()
+        if not normalized:
+            return None
+        try:
+            parsed = date.fromisoformat(normalized)
+        except ValueError:
+            return None
+        canonical = parsed.isoformat()
+        return canonical if normalized == canonical else None
 
     @staticmethod
     def _safe_bool(value: Any) -> bool | None:
@@ -374,7 +390,7 @@ class ChizhikMapper:
                 "temporarily_closed": None,
                 "rating": cls._safe_float(store.get("average_rating")),
                 "reviews_count": None,
-                "open_date": cls._safe_str(store.get("open_date")),
+                "open_date": cls._safe_iso_date_str(store.get("open_date")),
                 "longitude": cls._safe_float(store.get("lon")),
                 "latitude": cls._safe_float(store.get("lat")),
                 "administrative_unit": administrative_unit,

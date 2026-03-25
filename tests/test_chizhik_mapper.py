@@ -308,6 +308,26 @@ def test_map_store_uses_rating_and_open_date_from_snapshot_contract() -> None:
     assert mapped.open_date == "2022-03-28"
 
 
+def test_map_store_drops_non_date_open_date_from_snapshot_contract() -> None:
+    mapped = ChizhikMapper.map_store(
+        {
+            "sap_id": "HDXX",
+            "name": "Москва, Тестовая ул, Дом 1",
+            "locality": "Москва",
+            "lat": 55.75,
+            "lon": 37.61,
+            "average_rating": 4.1,
+            "open_date": "Скоро открытие!",
+        },
+        administrative_unit=ChizhikMapper.map_city({"name": "Москва", "slug": None}),
+        strict_validation=True,
+    )
+
+    assert mapped.code == "HDXX"
+    assert mapped.rating == 4.1
+    assert mapped.open_date is None
+
+
 def test_map_product_from_live_list_response(chizhik_live_payloads: dict[str, Any]) -> None:
     product = chizhik_live_payloads["product_row"]
     expected = _expected_from_product_payload(product)
