@@ -267,6 +267,44 @@ class FixPriceMapper:
         return cls.PRICE_UNIT_ALIASES.get(normalized)
 
     @classmethod
+    def _available_count_from_raw(
+        cls,
+        value: Any,
+        *,
+        unit_net: Literal["PCE", "KGM", "LTR"] | None,
+    ) -> int | float | None:
+        parsed = cls._numeric_from_raw(value)
+        if parsed is None:
+            return None
+        if unit_net == "PCE":
+            if parsed.is_integer():
+                return int(parsed)
+            return None
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        return parsed
+
+    @classmethod
+    def _variant_metric(cls, variant: dict[str, Any], key: str) -> float | None:
+        dimensions = variant.get("dimensions")
+        if isinstance(dimensions, dict):
+            nested_value = cls._numeric_from_raw(dimensions.get(key))
+            if nested_value is not None:
+                return nested_value
+        return cls._numeric_from_raw(variant.get(key))
+
+    @classmethod
+    def _package_metrics_from_product(
+        cls,
+        *,
+        variant: dict[str, Any],
+    ) -> tuple[None, float | None, Literal["KGM"] | None]:
+        package_weight_grams = cls._variant_metric(variant, "weight")
+        if package_weight_grams is None:
+            return None, None, None
+        return None, package_weight_grams / 1000.0, "KGM"
+
+    @classmethod
     def _metadata_from_product(
         cls,
         product: dict[str, Any],
@@ -525,9 +563,6 @@ class FixPriceMapper:
         if source_slug:
             source_page_url = f"https://fix-price.com/catalog/{source_slug.lstrip('/')}"
 
-        available_raw = product.get("inStock")
-        available_count = cls._safe_float(available_raw)
-
         metadata = cls._metadata_from_product(
             product,
             strict_validation=strict_validation,
@@ -551,22 +586,19 @@ class FixPriceMapper:
         )
 
         variant = cls._first_variant(product)
-        dimension_height = cls._numeric_from_raw(variant.get("height"))
-        dimension_width = cls._numeric_from_raw(variant.get("width"))
-        dimension_depth = cls._numeric_from_raw(variant.get("length"))
-        package_weight_grams = cls._numeric_from_raw(variant.get("weight"))
-        package_weight_gross = (
-            package_weight_grams / 1000.0
-            if package_weight_grams is not None
-            else None
-        )
+        dimension_height = cls._variant_metric(variant, "height")
+        dimension_width = cls._variant_metric(variant, "width")
+        dimension_depth = cls._variant_metric(variant, "length")
         unit_net = cls._unit_from_raw(product.get("unitType"))
         if unit_net is None:
             unit_net = cls._unit_from_raw(product.get("unit"))
-        if package_weight_gross is not None:
-            unit_net = "KGM"
-        elif unit_net is None:
-            unit_net = "KGM"
+        available_count = cls._available_count_from_raw(
+            product.get("inStock"),
+            unit_net=unit_net,
+        )
+        package_quantity_net, package_weight_gross, package_unit = cls._package_metrics_from_product(
+            variant=variant
+        )
 
         effective_price_unit = cls._price_unit_from_raw(product.get("priceUnit"))
         if effective_price_unit is None:
@@ -609,9 +641,9 @@ class FixPriceMapper:
             "price_unit": effective_price_unit,
             "unit_net": unit_net,
             "available_count": available_count,
-            "package_quantity_net": None,
+            "package_quantity_net": package_quantity_net,
             "package_weight_gross": package_weight_gross,
-            "package_unit": "KGM" if package_weight_gross is not None else None,
+            "package_unit": package_unit,
             "package_count": None,
             "dimension_height": dimension_height,
             "dimension_width": dimension_width,

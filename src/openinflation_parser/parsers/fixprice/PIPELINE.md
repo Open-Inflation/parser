@@ -61,6 +61,19 @@
 - опционально скачивает изображения
 - маппит payload в `Card`
 
+Правила маппинга товара:
+
+- `available_count` берется напрямую из `inStock`
+- `package_weight_gross` берется только из `variants.dimensions.weight` с fallback на `variants.weight`
+- вес из payload переводится из граммов в килограммы
+- `package_quantity_net` parser не вычисляет из `title` или `description`
+- парсинг фасовки из заголовка и заполнение `package_quantity`/`package_unit` уже делает `../converter/converter/parsers/fixprice/title_parser.py`
+
+Важно:
+
+- `FixPriceMapper` не должен дублировать title-parsing из `converter`
+- `strict_validation=True` в `Card` проверяет связку `package_quantity_net`/`package_weight_gross`/`package_unit`, поэтому gross-only payload из FixPrice валиден для обычного parser runtime, но не является strict-contract кейсом
+
 ## Store Info
 
 `collect_store_info(...)`:

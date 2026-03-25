@@ -79,6 +79,22 @@ class ChizhikMapper:
                 return int(parsed)
         return None
 
+    @classmethod
+    def _available_count_from_raw(
+        cls,
+        value: Any,
+        *,
+        unit_net: str | None,
+    ) -> int | float | None:
+        parsed = cls._safe_float(value)
+        if parsed is None:
+            return None
+        if unit_net == "PCE":
+            if parsed.is_integer():
+                return int(parsed)
+            return None
+        return parsed
+
     @staticmethod
     def _id_to_str(value: Any) -> str | None:
         if isinstance(value, bool):
@@ -356,6 +372,9 @@ class ChizhikMapper:
                     strict_validation=strict_validation
                 ),
                 "temporarily_closed": None,
+                "rating": cls._safe_float(store.get("average_rating")),
+                "reviews_count": None,
+                "open_date": cls._safe_str(store.get("open_date")),
                 "longitude": cls._safe_float(store.get("lon")),
                 "latitude": cls._safe_float(store.get("lat")),
                 "administrative_unit": administrative_unit,
@@ -434,6 +453,11 @@ class ChizhikMapper:
         promo = cls._safe_bool(product.get("is_inout"))
         if promo is None:
             promo = discount_price is not None or product.get("promo") is not None
+        unit_net = cls._unit_from_raw(product.get("base_unit") or product.get("uom"))
+        available_count = cls._available_count_from_raw(
+            product.get("stock_limit"),
+            unit_net=unit_net,
+        )
 
         payload: dict[str, Any] = {
             "sku": None,
@@ -462,8 +486,8 @@ class ChizhikMapper:
             "loyal_price": None,
             "wholesale_price": None,
             "price_unit": None,
-            "unit_net": cls._unit_from_raw(product.get("base_unit") or product.get("uom")),
-            "available_count": None,
+            "unit_net": unit_net,
+            "available_count": available_count,
             "package_quantity_net": None,
             "package_weight_gross": None,
             "package_unit": None,

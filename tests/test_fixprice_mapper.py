@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
 from typing import Any, Iterator
 
 import pytest
@@ -162,6 +164,24 @@ def fixprice_live_payloads() -> dict[str, Any]:
     return asyncio.run(_collect())
 
 
+@pytest.fixture(scope="module")
+def fixprice_snapshot_payloads() -> dict[str, Any]:
+    base = Path(__file__).resolve().parents[2] / "fixprice_api" / "tests" / "__snapshots__"
+    products_list = json.loads((base / "ClassCatalog.products_list.json").read_text())
+    product_info = json.loads((base / "ProductService.info.json").read_text())
+    if not isinstance(products_list, list) or not products_list:
+        raise RuntimeError("FixPrice products_list snapshot is empty.")
+    first_row = products_list[0]
+    if not isinstance(first_row, dict):
+        raise RuntimeError("FixPrice products_list snapshot has invalid first row.")
+    if not isinstance(product_info, dict):
+        raise RuntimeError("FixPrice product_info snapshot is invalid.")
+    return {
+        "product_row": first_row,
+        "product_info": product_info,
+    }
+
+
 def test_map_category_node_from_live_response(fixprice_live_payloads: dict[str, Any]) -> None:
     node = fixprice_live_payloads["first_category_node"]
     mapped = FixPriceMapper.map_category_node(node)
@@ -268,43 +288,37 @@ def test_map_product_does_not_invent_missing_values() -> None:
     assert mapped.categories_uid is None
 
 
-def test_map_product_sets_package_weight_gross_from_variant_weight() -> None:
+def test_map_product_sets_package_gross_from_product_info_snapshot(
+    fixprice_snapshot_payloads: dict[str, Any],
+) -> None:
+    product = fixprice_snapshot_payloads["product_info"]
     mapped = FixPriceMapper.map_product(
-        product={
-            "sku": "SKU-WEIGHT",
-            "price": "10.00",
-            "unitType": "кг",
-            "category": {"id": 1},
-            "variants": [
-                {
-                    "weight": 159.0,
-                    "height": 10,
-                    "width": 20,
-                    "length": 30,
-                }
-            ],
-        }
+        product,
     )
 
+    assert mapped.sku == product["sku"]
+    assert mapped.unit_net is None
     assert mapped.package_quantity_net is None
-    assert mapped.package_weight_gross == 0.159
+    assert mapped.package_weight_gross == 0.152
     assert mapped.package_unit == "KGM"
 
 
-def test_map_product_sets_package_weight_gross_even_for_non_weight_unit() -> None:
+def test_map_product_uses_catalog_snapshot_instock_without_inventing_unit(
+    fixprice_snapshot_payloads: dict[str, Any],
+) -> None:
+    product = fixprice_snapshot_payloads["product_row"]
     mapped = FixPriceMapper.map_product(
-        product={
-            "sku": "SKU-NON-WEIGHT",
-            "price": "10.00",
-            "unitType": "шт",
-            "category": {"id": 1},
-            "variants": [{"weight": 159.0}],
-        }
+        product,
+        strict_validation=True,
     )
 
-    assert mapped.unit_net == "KGM"
-    assert mapped.package_weight_gross == 0.159
-    assert mapped.package_unit == "KGM"
+    assert mapped.sku == product["sku"]
+    assert mapped.unit_net is None
+    assert mapped.available_count == product["inStock"]
+    assert isinstance(mapped.available_count, int)
+    assert mapped.package_quantity_net is None
+    assert mapped.package_weight_gross is None
+    assert mapped.package_unit is None
 
 
 def test_map_store_without_warehouse_field_sets_type_none() -> None:
@@ -413,8 +427,8 @@ def test_mapper_is_strict_about_contract_types() -> None:
             "category": {"id": 99},
         }
     )
-    assert mapped.unit_net == "KGM"
-    assert mapped.available_count is None
+    assert mapped.unit_net is None
+    assert mapped.available_count == 7.0
     assert mapped.price == 10.5
     assert mapped.meta_data is not None
     assert len(mapped.meta_data) == 1

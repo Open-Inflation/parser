@@ -2,6 +2,11 @@
 
 См. также контракт парсеров: [src/openinflation_parser/parsers/PARSER_PIPELINE.md](/home/admin1/Documents/GitHub/parser/src/openinflation_parser/parsers/PARSER_PIPELINE.md).
 
+Локальная документация лежит рядом с рабочими файлами:
+- общий контракт парсеров: [src/openinflation_parser/parsers/PARSER_PIPELINE.md](/home/admin1/Documents/GitHub/parser/src/openinflation_parser/parsers/PARSER_PIPELINE.md)
+- FixPrice: [src/openinflation_parser/parsers/fixprice/PIPELINE.md](/home/admin1/Documents/GitHub/parser/src/openinflation_parser/parsers/fixprice/PIPELINE.md)
+- Chizhik: [src/openinflation_parser/parsers/chizhik/PIPELINE.md](/home/admin1/Documents/GitHub/parser/src/openinflation_parser/parsers/chizhik/PIPELINE.md)
+
 Существует оркестрационный модуль и суб-модули парсеров.
 
 Структура парсеров:

@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 from chizhik_api import ChizhikAPI
-from openinflation_dataclass import AdministrativeUnit, Card
+from openinflation_dataclass import Card
 
 from openinflation_parser.parsers.chizhik import (
     CatalogProductsQuery,
@@ -100,23 +100,37 @@ def _producer_country_from_attribute(value: Any) -> str | None:
     return None
 
 
+def _available_count_from_payload(product: dict[str, Any]) -> int | float | None:
+    unit_net = ChizhikMapper._unit_from_raw(product.get("uom") or product.get("base_unit"))
+    parsed = _to_float(product.get("stock_limit"))
+    if parsed is None:
+        return None
+    if unit_net == "PCE":
+        return int(parsed) if parsed.is_integer() else None
+    return parsed
+
+
 def _expected_from_product_payload(product: dict[str, Any]) -> dict[str, Any]:
     rating = product.get("rating")
     rating_average = rating.get("rating_average") if isinstance(rating, dict) else rating
     reviews_count = rating.get("reviews_count") if isinstance(rating, dict) else product.get("reviews_count")
     price, discount_price = _price_components(product)
+    promo = product.get("is_inout")
+    if not isinstance(promo, bool):
+        promo = discount_price is not None or product.get("promo") is not None
     return {
         "plu": _to_str(product.get("plu")),
         "source_page_url": None,
         "title": _to_str(product.get("name") or product.get("title")),
         "description": _to_str(product.get("description")),
         "adult": product.get("has_age_restriction"),
-        "promo": discount_price is not None or product.get("promo") is not None,
+        "promo": promo,
         "rating": _to_float(rating_average),
         "reviews_count": _to_int(reviews_count),
         "price": price,
         "discount_price": discount_price,
         "unit_net": ChizhikMapper._unit_from_raw(product.get("uom") or product.get("base_unit")),
+        "available_count": _available_count_from_payload(product),
         "brand": _attribute_value(product, "Бренд"),
         "producer_name": _attribute_value(product, "Производитель"),
         "producer_country": _producer_country_from_attribute(
@@ -273,6 +287,27 @@ def test_map_category_node_from_live_response(chizhik_live_payloads: dict[str, A
     assert isinstance(mapped.children, list)
 
 
+def test_map_store_uses_rating_and_open_date_from_snapshot_contract() -> None:
+    mapped = ChizhikMapper.map_store(
+        {
+            "sap_id": "HD87",
+            "name": "Москва, Саянская ул, Дом 11Б",
+            "locality": "Москва",
+            "lat": 55.76833314,
+            "lon": 37.83372708,
+            "average_rating": 3.4,
+            "open_date": "2022-03-28",
+        },
+        administrative_unit=ChizhikMapper.map_city({"name": "Москва", "slug": None}),
+        strict_validation=True,
+    )
+
+    assert mapped.code == "HD87"
+    assert mapped.address == "Москва, Саянская ул, Дом 11Б"
+    assert mapped.rating == 3.4
+    assert mapped.open_date == "2022-03-28"
+
+
 def test_map_product_from_live_list_response(chizhik_live_payloads: dict[str, Any]) -> None:
     product = chizhik_live_payloads["product_row"]
     expected = _expected_from_product_payload(product)
@@ -295,6 +330,7 @@ def test_map_product_from_live_list_response(chizhik_live_payloads: dict[str, An
     assert mapped.price == expected["price"]
     assert mapped.discount_price == expected["discount_price"]
     assert mapped.unit_net == expected["unit_net"]
+    assert mapped.available_count == expected["available_count"]
     assert mapped.main_image == "images/00001/main.bin"
     assert mapped.images is not None
     assert mapped.images[0] == "images/00001/gallery_001.bin"
@@ -317,10 +353,63 @@ def test_map_product_from_live_info_response(chizhik_live_payloads: dict[str, An
     assert mapped.price == expected["price"]
     assert mapped.discount_price == expected["discount_price"]
     assert mapped.unit_net == expected["unit_net"]
+    assert mapped.available_count == expected["available_count"]
     assert mapped.brand == expected["brand"]
     assert mapped.producer_name == expected["producer_name"]
     assert mapped.producer_country == expected["producer_country"]
     assert mapped.composition == expected["composition"]
+
+
+def test_map_product_uses_stock_limit_as_available_count_for_piece_goods() -> None:
+    mapped = ChizhikMapper.map_product(
+        {
+            "plu": "12345",
+            "name": "Демо-товар",
+            "uom": "шт",
+            "stock_limit": "19.00",
+            "prices": {"regular": "111.0", "discount": None},
+        },
+        strict_validation=True,
+    )
+
+    assert mapped.unit_net == "PCE"
+    assert mapped.available_count == 19
+
+
+def test_map_product_does_not_use_weight_metadata_as_package_fields() -> None:
+    mapped = ChizhikMapper.map_product(
+        {
+            "plu": "4196364",
+            "title": "Напиток",
+            "base_unit": "шт",
+            "price": 39.0,
+            "meta_data": [
+                {"name": "Вес брутто товара, г", "code": "product_brut_weight", "value": 530},
+                {"name": "Вес нетто продукта, г", "code": "product_net_weight", "value": 500},
+                {"name": "Наименование бренда", "code": "brand_name", "value": "FUN UP"},
+            ],
+        },
+        strict_validation=True,
+    )
+
+    assert mapped.brand == "FUN UP"
+    assert mapped.package_quantity_net is None
+    assert mapped.package_weight_gross is None
+    assert mapped.package_unit is None
+
+
+def test_map_product_treats_is_inout_as_promo_flag() -> None:
+    mapped = ChizhikMapper.map_product(
+        {
+            "plu": "12345",
+            "name": "Демо-товар",
+            "uom": "шт",
+            "is_inout": True,
+            "prices": {"regular": "111.0", "discount": None},
+        }
+    )
+
+    assert mapped.promo is True
 
 
 def test_build_catalog_queries_full_mode_prefers_leaf_categories(
