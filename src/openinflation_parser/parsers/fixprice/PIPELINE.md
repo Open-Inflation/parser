@@ -64,6 +64,7 @@
 Правила маппинга товара:
 
 - `available_count` берется напрямую из `inStock`
+- `brand="No name"` из upstream FixPrice считается placeholder-значением и маппится в `null`
 - `package_weight_gross` берется только из `variants.dimensions.weight` с fallback на `variants.weight`
 - вес из payload переводится из граммов в килограммы
 - `package_quantity_net` parser не вычисляет из `title` или `description`

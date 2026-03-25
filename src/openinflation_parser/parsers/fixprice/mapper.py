@@ -80,6 +80,7 @@ class FixPriceMapper:
         "деревня",
         "village",
     }
+    PLACEHOLDER_BRANDS = {"no name"}
 
     @classmethod
     def _build(
@@ -125,6 +126,15 @@ class FixPriceMapper:
     @staticmethod
     def _safe_str(value: Any) -> str | None:
         return value if isinstance(value, str) else None
+
+    @classmethod
+    def _brand_from_raw(cls, value: Any) -> str | None:
+        token = cls._safe_str(value)
+        if token is None:
+            return None
+        if token.strip().casefold() in cls.PLACEHOLDER_BRANDS:
+            return None
+        return token
 
     @staticmethod
     def _safe_bool(value: Any) -> bool | None:
@@ -571,9 +581,9 @@ class FixPriceMapper:
         brand_block = product.get("brand")
         brand: str | None = None
         if isinstance(brand_block, dict):
-            brand = cls._safe_str(brand_block.get("title"))
+            brand = cls._brand_from_raw(brand_block.get("title"))
         elif isinstance(brand_block, str):
-            brand = brand_block
+            brand = cls._brand_from_raw(brand_block)
 
         producer_name = cls._safe_str(
             cls._first_property_value(product, alias="manufacturer")

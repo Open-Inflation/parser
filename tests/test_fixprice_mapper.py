@@ -288,6 +288,18 @@ def test_map_product_does_not_invent_missing_values() -> None:
     assert mapped.categories_uid is None
 
 
+def test_map_product_drops_fixprice_placeholder_brand() -> None:
+    mapped = FixPriceMapper.map_product(
+        {
+            "sku": "1530728",
+            "title": 'Японский лимонад "Рамунэ", Hata, 200 мл, в ассортименте',
+            "brand": {"title": "No name"},
+        }
+    )
+
+    assert mapped.brand is None
+
+
 def test_map_product_sets_package_gross_from_product_info_snapshot(
     fixprice_snapshot_payloads: dict[str, Any],
 ) -> None:
